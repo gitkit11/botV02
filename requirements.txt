@@ -1,0 +1,9 @@
+aiogram
+tensorflow
+pandas
+sklearn
+gnews
+transformers
+torch
+requests
+kagglehub

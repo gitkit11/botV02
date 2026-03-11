@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+
+# Игнорируем большие файлы данных и моделей
+featured_football_data.csv
+prophet_model.keras
+oracle_result.json
+maestro_result.json
+
+# Игнорируем локальные конфигурации
+config.py
