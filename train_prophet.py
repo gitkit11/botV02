@@ -84,8 +84,11 @@ def create_sequences(data, sequence_length=10):
 if __name__ == '__main__':
     # Загрузка и предобработка данных (если файл еще не создан)
     if not os.path.exists('featured_football_data.csv'):
-        DATA_PATH = '/home/ubuntu/.cache/kagglehub/datasets/mexwell/historical-football-resultsbetting-odds-data/versions/2'
-        print("Шаг 1-3: Загрузка, обработка и создание признаков...")
+        import kagglehub
+        print("Шаг 1: Скачивание датасета с Kaggle...")
+        DATA_PATH = kagglehub.dataset_download("mexwell/historical-football-resultsbetting-odds-data")
+        print(f"Датасет скачан в: {DATA_PATH}")
+        print("Шаг 2-3: Обработка и создание признаков...")
         raw_data = load_and_merge_data(DATA_PATH)
         processed_data = initial_preprocess(raw_data)
         featured_data, _ = create_features(processed_data)
