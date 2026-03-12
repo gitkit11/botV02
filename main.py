@@ -317,7 +317,14 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     else:
         agreement_text = "⚠️ Агенты расходятся во мнениях"
 
-    signal_icon = "🔥 СИГНАЛ: СТАВИТЬ!" if bet_signal == "СТАВИТЬ" else "⏸ СИГНАЛ: ПРОПУСТИТЬ"
+    if bet_signal == "СТАВИТЬ":
+        signal_icon = "🔥 СИГНАЛ: СТАВИТЬ!"
+    elif value_bets:
+        # Главный исход не рекомендован, но есть value ставки
+        best_vb = value_bets[0]
+        signal_icon = f"💰 СИГНАЛ: VALUE СТАВКА! {best_vb['outcome']} @ {best_vb['odds']} (EV: +{best_vb['ev']}%)"
+    else:
+        signal_icon = "⏸ СИГНАЛ: ПРОПУСТИТЬ"
 
     # xG блок
     xg_block = ""
@@ -373,18 +380,30 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     # Ансамбль блок
     ensemble_block = ""
     if ensemble_probs:
+        # Определяем лучший исход по ансамблю
+        best_outcome_key = max(['home', 'draw', 'away'], key=lambda k: ensemble_probs.get(k, 0))
+        best_outcome_map = {'home': f'П1 ({home_team})', 'draw': 'Ничья', 'away': f'П2 ({away_team})'}
+        best_outcome_label = best_outcome_map[best_outcome_key]
+        best_prob = round(ensemble_probs[best_outcome_key] * 100)
+        weights = ensemble_probs.get('weights', {})
+        w_str = f"Пуассон {round(weights.get('poisson',0)*100)}%+ELO {round(weights.get('elo',0)*100)}%+AI {round(weights.get('ai',0)*100)}%+Бук {round(weights.get('bookmaker',0)*100)}%+Пр {round(weights.get('prophet',0)*100)}%" if weights else ""
         ensemble_block = (
             f"🔢 *АНСАМБЛЬ (взвешенный):*\n"
-            f" П1: {round(ensemble_probs['home']*100)}% | Х: {round(ensemble_probs['draw']*100)}% | П2: {round(ensemble_probs['away']*100)}%"
+            f" П1: {round(ensemble_probs['home']*100)}% | Х: {round(ensemble_probs['draw']*100)}% | П2: {round(ensemble_probs['away']*100)}%\n"
+            f" ▶️ Лучший исход: *{best_outcome_label}* ({best_prob}%)\n"
+            f" _Веса: {w_str}_"
         )
 
     # Value bets блок
     value_block = ""
     if value_bets:
-        vlines = ["💰 *VALUE СТАВКИ:*"]
-        for vb in value_bets[:2]:  # Показываем топ-2
+        vlines = ["💰 *VALUE СТАВКИ (ансамбль):*"]
+        for vb in value_bets[:3]:  # Показываем топ-3
             vlines.append(
-                f" ✅ {vb['outcome']} @ {vb['odds']} | EV: +{vb['ev']}% | Келли: {vb['kelly']}%"
+                f" ✅ *{vb['outcome']}* @ {vb['odds']} — наша вероятность: {vb['our_prob']}% vs бук: {vb['book_prob']}%"
+            )
+            vlines.append(
+                f"   EV: +{vb['ev']}% | Келли: {vb['kelly']}% от банка"
             )
         value_block = "\n".join(vlines)
 
@@ -400,7 +419,7 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
         math_section = "\n\n".join(math_parts)
 
     report = f"""
-🏆 *CHIMERA AI v4.0 — АНАЛИЗ МАТЧА*
+🏆 *CHIMERA AI v4.2 — АНАЛИЗ МАТЧА*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ⚽ *{home_team} vs {away_team}*
@@ -437,6 +456,7 @@ _{llama_summary}_
 {agreement_text}
 *{signal_icon}*
 _{signal_reason}_
+
 """
     return report.strip()
 

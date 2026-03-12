@@ -427,12 +427,15 @@ def build_math_ensemble(prophet_data, poisson_probs, elo_probs,
     """
     Взвешенный ансамбль всех моделей.
 
-    Веса:
-    - Пуассон (xG): 35%
-    - ELO: 25%
-    - Пророк (нейросеть): 20%
-    - AI агенты: 15%
-    - Букмекерские вероятности: 5%
+    Веса (v4.2):
+    - Пуассон (xG): 40%  — самая точная модель для голов
+    - ELO: 30%           — сила команд и форма
+    - AI агенты: 15%   — контекстный анализ
+    - Букмекеры: 10%    — умные деньги
+    - Пророк (нейросеть): 5% — исторические паттерны
+
+    Пророк снижен до 5% т.к. нейросеть обучена на старых данных АПЛ
+    и не учитывает текущую форму команд.
     """
     # Пуассон
     p_home = poisson_probs.get('home_win', 0.33) if poisson_probs else 0.33
@@ -475,24 +478,24 @@ def build_math_ensemble(prophet_data, poisson_probs, elo_probs,
         if total_bk > 0:
             bk_home, bk_draw, bk_away = raw_h/total_bk, raw_d/total_bk, raw_a/total_bk
 
-    # Взвешенный ансамбль
-    w_poisson = 0.35
-    w_elo = 0.25
-    w_prophet = 0.20
-    w_ai = 0.15
-    w_book = 0.05
+    # Взвешенный ансамбль (v4.2 — исправленные веса)
+    w_poisson = 0.40   # Хорошо знает текущую форму через xG
+    w_elo = 0.30       # Хорошо знает силу команд
+    w_ai = 0.15        # Контекстный анализ (GPT+Llama+Mixtral)
+    w_book = 0.10      # Умные деньги букмекеров
+    w_prophet = 0.05   # Нейросеть на старых данных — минимальный вес
 
-    # Если нет Пуассона — перераспределяем
+    # Если нет Пуассона (Understat недоступен) — перераспределяем
     if not poisson_probs:
-        w_elo += 0.15
-        w_prophet += 0.10
+        w_elo += 0.25
         w_ai += 0.10
+        w_book += 0.05
         w_poisson = 0.0
 
     # Если нет ELO — перераспределяем
     if not elo_probs:
-        w_poisson += 0.15
-        w_prophet += 0.10
+        w_poisson += 0.20
+        w_ai += 0.10
         w_elo = 0.0
 
     final_home = (p_home*w_poisson + e_home*w_elo + pr_home*w_prophet +
