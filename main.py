@@ -170,9 +170,7 @@ def build_markets_keyboard(match_index):
     """Строит клавиатуру выбора рынка ставок."""
     builder = InlineKeyboardBuilder()
     builder.button(text="🏆 Победитель матча", callback_data=f"mkt_winner_{match_index}")
-    builder.button(text="⚽ Голы (тотал / обе забьют)", callback_data=f"mkt_goals_{match_index}")
-    builder.button(text="🚩 Угловые удары", callback_data=f"mkt_corners_{match_index}")
-    builder.button(text="🟨 Карточки", callback_data=f"mkt_cards_{match_index}")
+    builder.button(text="⚽ Голы (тотал 2.5 / обе забьют)", callback_data=f"mkt_goals_{match_index}")
     builder.button(text="⚖️ Гандикапы / Двойной шанс", callback_data=f"mkt_handicap_{match_index}")
     builder.button(text="⬅️ Выбрать другой матч", callback_data="back_to_matches")
     builder.adjust(1)
@@ -674,39 +672,6 @@ _{signal_reason}_
         report = format_goals_report(cached["home_team"], cached["away_team"], goals_result, cached["bookmaker_odds"])
         await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
 
-    # --- Рынок: Угловые ---
-    elif call.data.startswith("mkt_corners_"):
-        match_index = int(call.data.split("_")[2])
-        cached = analysis_cache.get(match_index)
-        if not cached:
-            await call.answer("Сначала запустите анализ матча.", show_alert=True)
-            return
-
-        await call.message.edit_text("⏳ *Анализирую рынок угловых...*", parse_mode="Markdown")
-
-        corners_result = run_corners_market_agent(
-            cached["home_team"], cached["away_team"],
-            cached["prophet_data"], cached["news_summary"], cached["bookmaker_odds"]
-        )
-        report = format_corners_report(cached["home_team"], cached["away_team"], corners_result)
-        await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
-
-    # --- Рынок: Карточки ---
-    elif call.data.startswith("mkt_cards_"):
-        match_index = int(call.data.split("_")[2])
-        cached = analysis_cache.get(match_index)
-        if not cached:
-            await call.answer("Сначала запустите анализ матча.", show_alert=True)
-            return
-
-        await call.message.edit_text("⏳ *Анализирую рынок карточек...*", parse_mode="Markdown")
-
-        cards_result = run_cards_market_agent(
-            cached["home_team"], cached["away_team"],
-            cached["prophet_data"], cached["news_summary"], cached["bookmaker_odds"]
-        )
-        report = format_cards_report(cached["home_team"], cached["away_team"], cards_result)
-        await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
 
     # --- Рынок: Гандикапы ---
     elif call.data.startswith("mkt_handicap_"):
