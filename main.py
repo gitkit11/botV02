@@ -11,7 +11,11 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from config import TELEGRAM_TOKEN, THE_ODDS_API_KEY
 from oracle_ai import oracle_analyze
-from agents import run_statistician_agent, run_scout_agent, run_arbitrator_agent, run_llama_agent
+from agents import (
+    run_statistician_agent, run_scout_agent, run_arbitrator_agent,
+    run_llama_agent, run_goals_market_agent,
+    run_corners_market_agent, run_cards_market_agent, run_handicap_market_agent
+)
 from database import init_db, save_prediction, get_statistics
 
 # --- 1. Настройка логирования ---
@@ -32,15 +36,16 @@ try:
     scaler.fit(data[feature_cols])
     print("[Загрузчик] Датасет и скалер готовы.")
 except Exception as e:
-    print(f"[КРИТИЧЕСКАЯ ОШИБКА] Не удалось загрузить датасет: {e}")
+    print(f"[Загрузчик] Датасет не найден (не критично): {e}")
     data = None
     scaler = None
 
 # --- 3. Инициализация базы данных ---
 init_db()
 
-# --- 4. Глобальный кэш матчей ---
+# --- 4. Глобальный кэш матчей и анализов ---
 matches_cache = []
+analysis_cache = {}  # Хранит результаты анализа по match_id
 
 # --- 5. Вспомогательные функции ---
 
@@ -99,20 +104,6 @@ def get_bookmaker_odds(match_data):
         pass
     return {"home_win": 0, "draw": 0, "away_win": 0}
 
-def get_totals_odds(match_data):
-    """Извлекает коэффициенты на тотал голов."""
-    try:
-        for bookmaker in match_data.get("bookmakers", []):
-            for market in bookmaker.get("markets", []):
-                if market["key"] == "totals":
-                    for outcome in market["outcomes"]:
-                        if outcome.get("point") == 2.5:
-                            if outcome["name"] == "Over":
-                                return {"over_2_5": outcome["price"]}
-    except Exception:
-        pass
-    return {"over_2_5": 0}
-
 def translate_outcome(text, home_team="Хозяева", away_team="Гости"):
     """Переводит исход с английского на русский с названиями команд."""
     if not text:
@@ -121,18 +112,26 @@ def translate_outcome(text, home_team="Хозяева", away_team="Гости"):
     if "home" in text_lower and "win" in text_lower:
         return f"{home_team} (хозяева)"
     if "away" in text_lower and "win" in text_lower:
-        return f"{away_team} (гость)"
+        return f"{away_team} (гости)"
     if "draw" in text_lower or "ничья" in text_lower:
         return "Ничья"
     if "хозяев" in text_lower or "хозяева" in text_lower:
         return f"{home_team} (хозяева)"
-    if "гостей" in text_lower or "гость" in text_lower:
-        return f"{away_team} (гость)"
+    if "гостей" in text_lower or "гость" in text_lower or "гости" in text_lower:
+        return f"{away_team} (гости)"
     if "победа хозяев" in text_lower:
         return f"{home_team} (хозяева)"
     if "победа гостей" in text_lower:
-        return f"{away_team} (гость)"
+        return f"{away_team} (гости)"
     return text
+
+def conf_icon(c):
+    """Иконка уверенности."""
+    if c >= 70: return "🟢"
+    elif c >= 55: return "🟡"
+    return "🔴"
+
+# --- 6. Клавиатуры ---
 
 def build_main_keyboard():
     """Строит главную клавиатуру."""
@@ -152,27 +151,40 @@ def build_matches_keyboard(matches):
     builder.adjust(1)
     return builder.as_markup()
 
-def build_back_keyboard():
-    """Строит кнопку возврата к списку матчей."""
+def build_markets_keyboard(match_index):
+    """Строит клавиатуру выбора рынка ставок."""
     builder = InlineKeyboardBuilder()
+    builder.button(text="🏆 Победитель матча", callback_data=f"mkt_winner_{match_index}")
+    builder.button(text="⚽ Голы (тотал / обе забьют)", callback_data=f"mkt_goals_{match_index}")
+    builder.button(text="🚩 Угловые удары", callback_data=f"mkt_corners_{match_index}")
+    builder.button(text="🟨 Карточки", callback_data=f"mkt_cards_{match_index}")
+    builder.button(text="⚖️ Гандикапы / Двойной шанс", callback_data=f"mkt_handicap_{match_index}")
     builder.button(text="⬅️ Выбрать другой матч", callback_data="back_to_matches")
+    builder.adjust(1)
     return builder.as_markup()
 
-def format_final_report(home_team, away_team, prophet_data, oracle_results, gpt_result, gemini_result):
-    """Форматирует финальный отчёт объединяя GPT и Llama."""
+def build_back_to_markets_keyboard(match_index):
+    """Кнопка возврата к выбору рынка."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎯 Другой рынок", callback_data=f"show_markets_{match_index}")
+    builder.button(text="⬅️ Выбрать другой матч", callback_data="back_to_matches")
+    builder.adjust(1)
+    return builder.as_markup()
 
-    # --- Пророк ---
+# --- 7. Форматирование отчётов ---
+
+def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_result, llama_result):
+    """Форматирует главный отчёт анализа матча."""
+
     home_prob = prophet_data[1] * 100
     draw_prob = prophet_data[0] * 100
     away_prob = prophet_data[2] * 100
 
-    # --- Оракул ---
     home_sentiment_score = oracle_results.get(home_team, {}).get('sentiment', 0)
     away_sentiment_score = oracle_results.get(away_team, {}).get('sentiment', 0)
     home_sentiment_label = "🟢 Позитивный" if home_sentiment_score > 0.1 else ("🔴 Негативный" if home_sentiment_score < -0.1 else "⚪ Нейтральный")
     away_sentiment_label = "🟢 Позитивный" if away_sentiment_score > 0.1 else ("🔴 Негативный" if away_sentiment_score < -0.1 else "⚪ Нейтральный")
 
-    # --- GPT Вердикт ---
     gpt_verdict_raw = gpt_result.get("recommended_outcome", "Нет данных")
     gpt_verdict = translate_outcome(gpt_verdict_raw, home_team, away_team)
     gpt_confidence = gpt_result.get("final_confidence_percent", 0)
@@ -180,80 +192,205 @@ def format_final_report(home_team, away_team, prophet_data, oracle_results, gpt_
     gpt_odds = gpt_result.get("bookmaker_odds", 0)
     gpt_stake = gpt_result.get("recommended_stake_percent", 0)
     gpt_ev = gpt_result.get("expected_value_percent", 0)
+    bet_signal = gpt_result.get("bet_signal", "ПРОПУСТИТЬ")
+    signal_reason = gpt_result.get("signal_reason", "")
 
-    # --- Llama Вердикт ---
-    gemini_verdict_raw = gemini_result.get("recommended_outcome", "Нет данных")
-    gemini_verdict = translate_outcome(gemini_verdict_raw, home_team, away_team)
-    gemini_confidence = gemini_result.get("final_confidence_percent", gpt_confidence)
-    gemini_summary = gemini_result.get("analysis_summary", "")
-    gemini_total = gemini_result.get("total_goals_prediction", "—")
-    gemini_btts = gemini_result.get("both_teams_to_score_prediction", "—")
+    llama_verdict_raw = llama_result.get("recommended_outcome", "Нет данных")
+    llama_verdict = translate_outcome(llama_verdict_raw, home_team, away_team)
+    llama_confidence = llama_result.get("final_confidence_percent", gpt_confidence)
+    llama_summary = llama_result.get("analysis_summary", "")
+    llama_total = llama_result.get("total_goals_prediction", "—")
+    llama_total_reason = llama_result.get("total_goals_reasoning", "")
+    llama_btts = llama_result.get("both_teams_to_score_prediction", "—")
 
-    # --- Иконки ---
-    def conf_icon(c):
-        if c >= 70: return "🟢"
-        elif c >= 55: return "🟡"
-        return "🔴"
-
-    # --- Согласие моделей ---
-    models_agree = gpt_verdict_raw.lower() in gemini_verdict_raw.lower() or gemini_verdict_raw.lower() in gpt_verdict_raw.lower()
+    models_agree = (gpt_verdict_raw.lower() in llama_verdict_raw.lower() or
+                    llama_verdict_raw.lower() in gpt_verdict_raw.lower())
     agreement_text = "✅ Обе модели согласны!" if models_agree else "⚠️ Модели расходятся во мнениях"
 
+    signal_icon = "🔥 СИГНАЛ: СТАВИТЬ!" if bet_signal == "СТАВИТЬ" else "⏸ СИГНАЛ: ПРОПУСТИТЬ"
+
     report = f"""
-🏆 *ФИНАЛЬНЫЙ АНАЛИЗ CHIMERA AI v3.0*
+🏆 *CHIMERA AI v4.0 — АНАЛИЗ МАТЧА*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ⚽ *{home_team} vs {away_team}*
 
-📊 *СТАТИСТИКА (Пророк):*
+📊 *ПРОРОК (нейросеть):*
  П1: {home_prob:.0f}% | Х: {draw_prob:.0f}% | П2: {away_prob:.0f}%
 
-🗞 *НОВОСТНОЙ ФОН (Оракул):*
+🗞 *ОРАКУЛ (новостной фон):*
  {home_team}: {home_sentiment_label}
  {away_team}: {away_sentiment_label}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-🧠 *АНАЛИЗ GPT-4o-mini:*
+🧠 *GPT-4o (Маэстро):*
 _{gpt_summary}_
 
-🤖 *АНАЛИЗ Llama 3.3 70B:*
-_{gemini_summary}_
+🤖 *Llama 3.3 70B:*
+_{llama_summary}_
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-⚖️ *ВЕРДИКТ МАЭСТРО (GPT):*
-
+⚖️ *ВЕРДИКТ МАЭСТРО:*
 {conf_icon(gpt_confidence)} Исход: {gpt_verdict}
-{conf_icon(gpt_confidence)} Уверенность ИИ: {gpt_confidence}%
+{conf_icon(gpt_confidence)} Уверенность: {gpt_confidence}%
 🎯 Коэффициент: {gpt_odds}
-💰 Рекомендуемая ставка: {gpt_stake:.1f}% от депозита
-📈 Ожидаемая прибыль: +{gpt_ev:.1f}% от ставки
+💰 Ставка (Келли): {gpt_stake:.1f}% от депозита
+📈 Ожидаемая ценность: +{gpt_ev:.1f}%
 
-━━━━━━━━━━━━━━━━━━━━━━━━━
 🤖 *ВЕРДИКТ Llama 3.3 70B:*
-
-{conf_icon(gemini_confidence)} Исход: {gemini_verdict}
-{conf_icon(gemini_confidence)} Уверенность ИИ: {gemini_confidence}%
-⚽ Тотал голов: {gemini_total}
-🥅 Обе забьют: {gemini_btts}
+{conf_icon(llama_confidence)} Исход: {llama_verdict}
+{conf_icon(llama_confidence)} Уверенность: {llama_confidence}%
+⚽ Тотал: {llama_total} _{llama_total_reason}_
+🥅 Обе забьют: {llama_btts}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 {agreement_text}
+*{signal_icon}*
+_{signal_reason}_
 """
     return report.strip()
 
-# --- 6. Хендлеры Telegram ---
+def format_goals_report(home_team, away_team, goals_result):
+    """Форматирует отчёт по рынку голов."""
+    summary = goals_result.get("summary", "")
+    over_2_5 = goals_result.get("total_over_2_5", "—")
+    over_2_5_conf = goals_result.get("total_over_2_5_confidence", 0)
+    over_2_5_reason = goals_result.get("total_over_2_5_reason", "")
+    over_1_5 = goals_result.get("total_over_1_5", "—")
+    over_1_5_conf = goals_result.get("total_over_1_5_confidence", 0)
+    btts = goals_result.get("btts", "—")
+    btts_conf = goals_result.get("btts_confidence", 0)
+    btts_reason = goals_result.get("btts_reason", "")
+    first_goal = goals_result.get("first_goal", "—")
+    best_bet = goals_result.get("best_goals_bet", "")
+
+    return f"""
+⚽ *АНАЛИЗ ГОЛОВ — {home_team} vs {away_team}*
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_{summary}_
+
+📊 *ТОТАЛ ГОЛОВ:*
+{conf_icon(over_2_5_conf)} Тотал 2.5: *{over_2_5}* ({over_2_5_conf}%)
+_{over_2_5_reason}_
+
+{conf_icon(over_1_5_conf)} Тотал 1.5: *{over_1_5}* ({over_1_5_conf}%)
+
+🥅 *ОБЕ ЗАБЬЮТ:*
+{conf_icon(btts_conf)} Обе забьют: *{btts}* ({btts_conf}%)
+_{btts_reason}_
+
+🎯 *КТО ЗАБЬЁТ ПЕРВЫМ:* {first_goal}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 *ЛУЧШАЯ СТАВКА НА ГОЛЫ:*
+_{best_bet}_
+""".strip()
+
+def format_corners_report(home_team, away_team, corners_result):
+    """Форматирует отчёт по рынку угловых."""
+    summary = corners_result.get("summary", "")
+    total = corners_result.get("total_corners_over_9_5", "—")
+    total_conf = corners_result.get("total_corners_confidence", 0)
+    total_reason = corners_result.get("total_corners_reason", "")
+    home_c = corners_result.get("home_corners_over_4_5", "—")
+    away_c = corners_result.get("away_corners_over_4_5", "—")
+    winner = corners_result.get("corners_winner", "—")
+    best_bet = corners_result.get("best_corners_bet", "")
+
+    return f"""
+🚩 *АНАЛИЗ УГЛОВЫХ — {home_team} vs {away_team}*
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_{summary}_
+
+📊 *ТОТАЛ УГЛОВЫХ:*
+{conf_icon(total_conf)} Тотал 9.5: *{total}* ({total_conf}%)
+_{total_reason}_
+
+🏠 {home_team}: *{home_c}* угловых
+✈️ {away_team}: *{away_c}* угловых
+🏆 Больше угловых: *{winner}*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 *ЛУЧШАЯ СТАВКА НА УГЛОВЫЕ:*
+_{best_bet}_
+""".strip()
+
+def format_cards_report(home_team, away_team, cards_result):
+    """Форматирует отчёт по рынку карточек."""
+    summary = cards_result.get("summary", "")
+    total = cards_result.get("total_cards_over_3_5", "—")
+    total_conf = cards_result.get("total_cards_confidence", 0)
+    total_reason = cards_result.get("total_cards_reason", "")
+    red = cards_result.get("red_card", "—")
+    red_conf = cards_result.get("red_card_confidence", 0)
+    more_cards = cards_result.get("more_cards_team", "—")
+    best_bet = cards_result.get("best_cards_bet", "")
+
+    return f"""
+🟨 *АНАЛИЗ КАРТОЧЕК — {home_team} vs {away_team}*
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_{summary}_
+
+📊 *ТОТАЛ КАРТОЧЕК:*
+{conf_icon(total_conf)} Тотал 3.5: *{total}* ({total_conf}%)
+_{total_reason}_
+
+🟥 Красная карточка: *{red}* ({red_conf}%)
+🟨 Больше карточек: *{more_cards}*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 *ЛУЧШАЯ СТАВКА НА КАРТОЧКИ:*
+_{best_bet}_
+""".strip()
+
+def format_handicap_report(home_team, away_team, handicap_result):
+    """Форматирует отчёт по рынку гандикапов."""
+    summary = handicap_result.get("summary", "")
+    ah_home = handicap_result.get("asian_handicap_home", "—")
+    ah_home_conf = handicap_result.get("asian_handicap_home_confidence", 0)
+    ah_away = handicap_result.get("asian_handicap_away", "—")
+    ah_away_conf = handicap_result.get("asian_handicap_away_confidence", 0)
+    dc = handicap_result.get("double_chance", "—")
+    dc_reason = handicap_result.get("double_chance_reason", "")
+    best_bet = handicap_result.get("best_handicap_bet", "")
+
+    return f"""
+⚖️ *ГАНДИКАПЫ — {home_team} vs {away_team}*
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_{summary}_
+
+📊 *АЗИАТСКИЙ ГАНДИКАП:*
+{conf_icon(ah_home_conf)} {home_team} -0.5: *{ah_home}* ({ah_home_conf}%)
+{conf_icon(ah_away_conf)} {away_team} +0.5: *{ah_away}* ({ah_away_conf}%)
+
+🎯 *ДВОЙНОЙ ШАНС:*
+Рекомендация: *{dc}*
+_{dc_reason}_
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 *ЛУЧШАЯ СТАВКА НА ГАНДИКАП:*
+_{best_bet}_
+""".strip()
+
+# --- 8. Хендлеры Telegram ---
 dp = Dispatcher()
 
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     get_matches()
     await message.answer(
-        "🔮 *Chimera AI v3.0* — профессиональный анализ футбольных матчей\n\n"
+        "🔮 *Chimera AI v4.0* — профессиональный анализ футбольных матчей\n\n"
         "Используются 4 независимых ИИ:\n"
-        "🔮 Пророк — нейросеть (30 лет статистики)\n"
+        "🔮 Пророк — нейросеть (66,000+ матчей)\n"
         "📰 Оракул — анализ новостей\n"
-        "🧠 GPT-4o-mini — стратегический анализ\n"
-        "🤖 Llama 3.3 70B — второе независимое мнение",
+        "🧠 GPT-4o — стратегический анализ\n"
+        "🤖 Llama 3.3 70B — второе независимое мнение\n\n"
+        "После анализа выбирай рынок:\n"
+        "🏆 Победитель | ⚽ Голы | 🚩 Угловые | 🟨 Карточки | ⚖️ Гандикапы",
         parse_mode="Markdown",
         reply_markup=build_main_keyboard()
     )
@@ -284,7 +421,7 @@ async def handle_text(message: types.Message):
 
         if total == 0:
             stats_text = (
-                "📊 *Статистика прогнозов Chimera AI*\n\n"
+                "📊 *Статистика Chimera AI*\n\n"
                 "Пока нет сохранённых прогнозов.\n"
                 "Сделайте первый анализ матча!"
             )
@@ -305,18 +442,21 @@ async def handle_text(message: types.Message):
             "Расширенные функции в разработке.\n"
             "Скоро здесь появятся:\n"
             "• Анализ Ла Лиги, Бундеслиги, Серии А\n"
-            "• Уведомления о выгодных ставках\n"
+            "• Утренние авто-сигналы лучших матчей\n"
             "• Детальная статистика ROI",
             parse_mode="Markdown"
         )
 
 @dp.callback_query()
 async def handle_callback(call: types.CallbackQuery):
+
+    # --- Возврат к списку матчей ---
     if call.data == "back_to_matches":
         if not matches_cache:
             get_matches()
         await call.message.edit_text("Выберите матч для анализа:", reply_markup=build_matches_keyboard(matches_cache))
 
+    # --- Обновление матчей ---
     elif call.data == "refresh_matches":
         matches = get_matches()
         if not matches:
@@ -324,6 +464,26 @@ async def handle_callback(call: types.CallbackQuery):
             return
         await call.message.edit_text(f"✅ Список обновлён! Найдено {len(matches)} матчей.", reply_markup=build_matches_keyboard(matches))
 
+    # --- Показать меню рынков ---
+    elif call.data.startswith("show_markets_"):
+        match_index = int(call.data.split("_")[2])
+        if match_index >= len(matches_cache):
+            await call.answer("Матч не найден.", show_alert=True)
+            return
+        match = matches_cache[match_index]
+        home_team = match["home_team"]
+        away_team = match["away_team"]
+
+        cached = analysis_cache.get(match_index, {})
+        if cached:
+            report = format_main_report(
+                home_team, away_team,
+                cached["prophet_data"], cached["oracle_results"],
+                cached["gpt_result"], cached["llama_result"]
+            )
+            await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_markets_keyboard(match_index))
+
+    # --- Выбор матча для анализа ---
     elif call.data.startswith("m_"):
         match_index = int(call.data.split("_")[1])
         if match_index >= len(matches_cache):
@@ -342,10 +502,7 @@ async def handle_callback(call: types.CallbackQuery):
             parse_mode="Markdown"
         )
 
-        # Шаг 1: Пророк
         prophet_data = get_prophet_prediction(home_team, away_team)
-
-        # Шаг 2: Оракул
         oracle_results = oracle_analyze(home_team, away_team)
         home_news = oracle_results.get(home_team, {})
         away_news = oracle_results.get(away_team, {})
@@ -361,44 +518,48 @@ async def handle_callback(call: types.CallbackQuery):
             f"⚽ {home_team} vs {away_team}\n\n"
             f"🔮 Пророк... ✅\n"
             f"📰 Оракул... ✅\n"
-            f"🧠 GPT-4o-mini анализирует...",
+            f"🧠 GPT-4o анализирует...",
             parse_mode="Markdown"
         )
 
-        # Шаг 3: GPT Агенты
         bookmaker_odds = get_bookmaker_odds(match)
         stats_result = run_statistician_agent(prophet_data)
         scout_result = run_scout_agent(home_team, away_team, news_summary)
-        arbitrator_result = run_arbitrator_agent(stats_result, scout_result, bookmaker_odds)
+        gpt_result = run_arbitrator_agent(stats_result, scout_result, bookmaker_odds)
 
         await call.message.edit_text(
             f"⏳ *Запускаю анализ матча...*\n\n"
             f"⚽ {home_team} vs {away_team}\n\n"
             f"🔮 Пророк... ✅\n"
             f"📰 Оракул... ✅\n"
-            f"🧠 GPT-4o-mini... ✅\n"
-            f"🤖 Gemini 2.5 Flash анализирует...",
+            f"🧠 GPT-4o... ✅\n"
+            f"🤖 Llama 3.3 70B анализирует...",
             parse_mode="Markdown"
         )
 
-        # Шаг 4: Gemini Агент
-        gemini_result = run_llama_agent(home_team, away_team, prophet_data, news_summary, bookmaker_odds)
+        llama_result = run_llama_agent(home_team, away_team, prophet_data, news_summary, bookmaker_odds)
 
-        # Шаг 5: Финальный отчёт
-        final_report = format_final_report(
-            home_team, away_team,
-            prophet_data, oracle_results,
-            arbitrator_result, gemini_result
-        )
+        # Сохраняем в кэш для повторного использования при выборе рынков
+        analysis_cache[match_index] = {
+            "prophet_data": prophet_data,
+            "oracle_results": oracle_results,
+            "news_summary": news_summary,
+            "bookmaker_odds": bookmaker_odds,
+            "gpt_result": gpt_result,
+            "llama_result": llama_result,
+            "home_team": home_team,
+            "away_team": away_team,
+            "match": match
+        }
 
-        # Шаг 6: Сохранение в базу данных
+        # Сохранение в базу данных
         prediction_data = {
-            "gpt_verdict": arbitrator_result.get("recommended_outcome", ""),
-            "gemini_verdict": gemini_result.get("recommended_outcome", ""),
-            "gpt_confidence": arbitrator_result.get("final_confidence_percent", 0),
-            "gemini_confidence": gemini_result.get("final_confidence_percent", 0),
-            "total_goals": gemini_result.get("total_goals_prediction", ""),
-            "btts": gemini_result.get("both_teams_to_score_prediction", ""),
+            "gpt_verdict": gpt_result.get("recommended_outcome", ""),
+            "gemini_verdict": llama_result.get("recommended_outcome", ""),
+            "gpt_confidence": gpt_result.get("final_confidence_percent", 0),
+            "gemini_confidence": llama_result.get("final_confidence_percent", 0),
+            "total_goals": llama_result.get("total_goals_prediction", ""),
+            "btts": llama_result.get("both_teams_to_score_prediction", ""),
         }
         save_prediction(
             match['id'],
@@ -407,12 +568,142 @@ async def handle_callback(call: types.CallbackQuery):
             prediction_data
         )
 
-        await call.message.edit_text(final_report, parse_mode="Markdown", reply_markup=build_back_keyboard())
+        final_report = format_main_report(
+            home_team, away_team,
+            prophet_data, oracle_results,
+            gpt_result, llama_result
+        )
 
-# --- 7. Запуск бота ---
+        await call.message.edit_text(
+            final_report,
+            parse_mode="Markdown",
+            reply_markup=build_markets_keyboard(match_index)
+        )
+
+    # --- Рынок: Победитель ---
+    elif call.data.startswith("mkt_winner_"):
+        match_index = int(call.data.split("_")[2])
+        cached = analysis_cache.get(match_index)
+        if not cached:
+            await call.answer("Сначала запустите анализ матча.", show_alert=True)
+            return
+
+        home_team = cached["home_team"]
+        away_team = cached["away_team"]
+        gpt_result = cached["gpt_result"]
+        llama_result = cached["llama_result"]
+        prophet_data = cached["prophet_data"]
+        bookmaker_odds = cached["bookmaker_odds"]
+
+        gpt_verdict = translate_outcome(gpt_result.get("recommended_outcome", ""), home_team, away_team)
+        gpt_conf = gpt_result.get("final_confidence_percent", 0)
+        gpt_odds_val = gpt_result.get("bookmaker_odds", 0)
+        gpt_stake = gpt_result.get("recommended_stake_percent", 0)
+        gpt_ev = gpt_result.get("expected_value_percent", 0)
+        bet_signal = gpt_result.get("bet_signal", "ПРОПУСТИТЬ")
+        signal_reason = gpt_result.get("signal_reason", "")
+
+        llama_verdict = translate_outcome(llama_result.get("recommended_outcome", ""), home_team, away_team)
+        llama_conf = llama_result.get("final_confidence_percent", 0)
+
+        signal_icon = "🔥 СТАВИТЬ!" if bet_signal == "СТАВИТЬ" else "⏸ ПРОПУСТИТЬ"
+
+        report = f"""
+🏆 *ПОБЕДИТЕЛЬ МАТЧА*
+{home_team} vs {away_team}
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 *Пророк (нейросеть):*
+ П1: {prophet_data[1]*100:.0f}% | Х: {prophet_data[0]*100:.0f}% | П2: {prophet_data[2]*100:.0f}%
+
+⚖️ *Вердикт GPT-4o:*
+{conf_icon(gpt_conf)} {gpt_verdict} — {gpt_conf}%
+🎯 Коэф: {gpt_odds_val} | Ставка: {gpt_stake:.1f}% | EV: +{gpt_ev:.1f}%
+
+🤖 *Вердикт Llama 3.3 70B:*
+{conf_icon(llama_conf)} {llama_verdict} — {llama_conf}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+*{signal_icon}*
+_{signal_reason}_
+""".strip()
+
+        await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
+
+    # --- Рынок: Голы ---
+    elif call.data.startswith("mkt_goals_"):
+        match_index = int(call.data.split("_")[2])
+        cached = analysis_cache.get(match_index)
+        if not cached:
+            await call.answer("Сначала запустите анализ матча.", show_alert=True)
+            return
+
+        await call.message.edit_text("⏳ *Анализирую рынок голов...*", parse_mode="Markdown")
+
+        goals_result = run_goals_market_agent(
+            cached["home_team"], cached["away_team"],
+            cached["prophet_data"], cached["news_summary"],
+            cached["bookmaker_odds"], cached["gpt_result"], cached["llama_result"]
+        )
+        report = format_goals_report(cached["home_team"], cached["away_team"], goals_result)
+        await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
+
+    # --- Рынок: Угловые ---
+    elif call.data.startswith("mkt_corners_"):
+        match_index = int(call.data.split("_")[2])
+        cached = analysis_cache.get(match_index)
+        if not cached:
+            await call.answer("Сначала запустите анализ матча.", show_alert=True)
+            return
+
+        await call.message.edit_text("⏳ *Анализирую рынок угловых...*", parse_mode="Markdown")
+
+        corners_result = run_corners_market_agent(
+            cached["home_team"], cached["away_team"],
+            cached["prophet_data"], cached["news_summary"], cached["bookmaker_odds"]
+        )
+        report = format_corners_report(cached["home_team"], cached["away_team"], corners_result)
+        await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
+
+    # --- Рынок: Карточки ---
+    elif call.data.startswith("mkt_cards_"):
+        match_index = int(call.data.split("_")[2])
+        cached = analysis_cache.get(match_index)
+        if not cached:
+            await call.answer("Сначала запустите анализ матча.", show_alert=True)
+            return
+
+        await call.message.edit_text("⏳ *Анализирую рынок карточек...*", parse_mode="Markdown")
+
+        cards_result = run_cards_market_agent(
+            cached["home_team"], cached["away_team"],
+            cached["prophet_data"], cached["news_summary"], cached["bookmaker_odds"]
+        )
+        report = format_cards_report(cached["home_team"], cached["away_team"], cards_result)
+        await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
+
+    # --- Рынок: Гандикапы ---
+    elif call.data.startswith("mkt_handicap_"):
+        match_index = int(call.data.split("_")[2])
+        cached = analysis_cache.get(match_index)
+        if not cached:
+            await call.answer("Сначала запустите анализ матча.", show_alert=True)
+            return
+
+        await call.message.edit_text("⏳ *Анализирую гандикапы...*", parse_mode="Markdown")
+
+        handicap_result = run_handicap_market_agent(
+            cached["home_team"], cached["away_team"],
+            cached["prophet_data"], cached["bookmaker_odds"],
+            cached["gpt_result"], cached["llama_result"]
+        )
+        report = format_handicap_report(cached["home_team"], cached["away_team"], handicap_result)
+        await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
+
+# --- 9. Запуск бота ---
 async def main():
     bot = Bot(token=TELEGRAM_TOKEN)
-    print("🚀 Chimera AI v3.0: Бот запущен!")
+    print("🚀 Chimera AI v4.0: Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
