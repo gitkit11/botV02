@@ -30,15 +30,19 @@ except Exception as e:
     prophet_model = None
 
 try:
+    import json
     data = pd.read_csv("all_matches_featured.csv", index_col=0)
-    feature_cols = [c for c in data.columns if c != 'FTR']
+    feature_cols = [c for c in data.columns if c not in ('FTR','label','HomeTeam','AwayTeam')]
     scaler = MinMaxScaler()
     scaler.fit(data[feature_cols])
-    print("[Загрузчик] Датасет и скалер готовы.")
+    with open('team_encoder.json', 'r', encoding='utf-8') as _f:
+        team_encoder = json.load(_f)
+    print(f"[Загрузчик] Датасет и скалер готовы. Команд в энкодере: {len(team_encoder)}")
 except Exception as e:
     print(f"[Загрузчик] Датасет не найден (не критично): {e}")
     data = None
     scaler = None
+    team_encoder = {}
 
 # --- 3. Инициализация базы данных ---
 init_db()
@@ -54,16 +58,26 @@ def get_prophet_prediction(home_team, away_team):
     if not prophet_model or data is None or scaler is None:
         return [0.33, 0.33, 0.34]
     try:
-        home_data = data[data['HomeTeam_encoded'] == hash(home_team) % 50].tail(5)
-        away_data = data[data['AwayTeam_encoded'] == hash(away_team) % 50].tail(5)
-        if len(home_data) < 5 or len(away_data) < 5:
+        home_id = team_encoder.get(home_team)
+        away_id = team_encoder.get(away_team)
+        if home_id is None or away_id is None:
+            print(f"[Пророк] Команды не найдены в энкодере: '{home_team}', '{away_team}'")
+            print(f"[Пророк] Доступные команды: {list(team_encoder.keys())}")
+            return [0.33, 0.33, 0.34]
+        home_data = data[data['HomeTeam_encoded'] == home_id].tail(5)
+        away_data = data[data['AwayTeam_encoded'] == away_id].tail(5)
+        if len(home_data) < 3 or len(away_data) < 3:
+            print(f"[Пророк] Мало данных для {home_team}/{away_team}, используем общую выборку")
             sample = data.tail(10)
         else:
-            sample = pd.concat([home_data, away_data])
+            sample = pd.concat([home_data, away_data]).tail(10)
+        if len(sample) < 10:
+            sample = pd.concat([sample, data.tail(10 - len(sample))])
         sample = sample[feature_cols].tail(10)
         scaled = scaler.transform(sample)
         sequence = np.array([scaled])
         prediction = prophet_model.predict(sequence, verbose=0)[0]
+        print(f"[Пророк] {home_team} vs {away_team}: П1={prediction[1]:.2f} Х={prediction[0]:.2f} П2={prediction[2]:.2f}")
         return [float(prediction[0]), float(prediction[1]), float(prediction[2])]
     except Exception as e:
         print(f"[Пророк Ошибка] {e}")
