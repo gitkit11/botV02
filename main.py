@@ -67,7 +67,9 @@ TEAM_NAME_MAP = {
     "Manchester City": "Man City",
     "Manchester United": "Man United",
     "West Bromwich Albion": "West Brom",
+    "West Ham United": "West Ham",
     "Sheffield Utd": "Sheffield United",
+    "Sheffield United FC": "Sheffield United",
     "Brighton and Hove Albion": "Brighton",
     "Brighton & Hove Albion": "Brighton",
     "Tottenham Hotspur": "Tottenham",
@@ -75,6 +77,17 @@ TEAM_NAME_MAP = {
     "Aston Villa FC": "Aston Villa",
     "Ipswich Town": "Ipswich",
     "AFC Bournemouth": "Bournemouth",
+    "Luton Town": "Luton",
+    "Brentford FC": "Brentford",
+    "Crystal Palace FC": "Crystal Palace",
+    "Everton FC": "Everton",
+    "Fulham FC": "Fulham",
+    "Arsenal FC": "Arsenal",
+    "Chelsea FC": "Chelsea",
+    "Liverpool FC": "Liverpool",
+    "Burnley FC": "Burnley",
+    "Southampton FC": "Southampton",
+    "Watford FC": "Watford",
 }
 
 def normalize_team(name):
