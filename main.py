@@ -90,19 +90,34 @@ def get_matches():
         return matches_cache
 
 def get_bookmaker_odds(match_data):
-    """Извлекает коэффициенты П1/Х/П2 из данных матча."""
+    """Извлекает коэффициенты П1/Х/П2 и тотал голов из данных матча."""
+    result = {"home_win": 0, "draw": 0, "away_win": 0,
+              "over_2_5": 0, "under_2_5": 0,
+              "over_1_5": 0, "under_1_5": 0}
     try:
         for bookmaker in match_data.get("bookmakers", []):
             for market in bookmaker.get("markets", []):
-                if market["key"] == "h2h":
+                if market["key"] == "h2h" and result["home_win"] == 0:
                     outcomes = {o["name"]: o["price"] for o in market["outcomes"]}
-                    home = outcomes.get(match_data["home_team"], 0)
-                    away = outcomes.get(match_data["away_team"], 0)
-                    draw = outcomes.get("Draw", 0)
-                    return {"home_win": home, "draw": draw, "away_win": away}
-    except Exception:
-        pass
-    return {"home_win": 0, "draw": 0, "away_win": 0}
+                    result["home_win"] = outcomes.get(match_data["home_team"], 0)
+                    result["away_win"] = outcomes.get(match_data["away_team"], 0)
+                    result["draw"] = outcomes.get("Draw", 0)
+                elif market["key"] == "totals":
+                    for outcome in market["outcomes"]:
+                        point = outcome.get("point", 0)
+                        name = outcome.get("name", "")
+                        price = outcome.get("price", 0)
+                        if point == 2.5 and name == "Over" and result["over_2_5"] == 0:
+                            result["over_2_5"] = price
+                        elif point == 2.5 and name == "Under" and result["under_2_5"] == 0:
+                            result["under_2_5"] = price
+                        elif point == 1.5 and name == "Over" and result["over_1_5"] == 0:
+                            result["over_1_5"] = price
+                        elif point == 1.5 and name == "Under" and result["under_1_5"] == 0:
+                            result["under_1_5"] = price
+    except Exception as e:
+        print(f"[API Ошибка коэффициентов] {e}")
+    return result
 
 def translate_outcome(text, home_team="Хозяева", away_team="Гости"):
     """Переводит исход с английского на русский с названиями команд."""
@@ -250,8 +265,10 @@ _{signal_reason}_
 """
     return report.strip()
 
-def format_goals_report(home_team, away_team, goals_result):
+def format_goals_report(home_team, away_team, goals_result, bookmaker_odds=None):
     """Форматирует отчёт по рынку голов."""
+    if bookmaker_odds is None:
+        bookmaker_odds = {}
     summary = goals_result.get("summary", "")
     over_2_5 = goals_result.get("total_over_2_5", "—")
     over_2_5_conf = goals_result.get("total_over_2_5_confidence", 0)
@@ -264,6 +281,15 @@ def format_goals_report(home_team, away_team, goals_result):
     first_goal = goals_result.get("first_goal", "—")
     best_bet = goals_result.get("best_goals_bet", "")
 
+    # Реальные коэффициенты из API
+    real_over_2_5 = bookmaker_odds.get("over_2_5", 0)
+    real_under_2_5 = bookmaker_odds.get("under_2_5", 0)
+    real_over_1_5 = bookmaker_odds.get("over_1_5", 0)
+
+    # Формируем строку с коэффициентами если они есть
+    odds_2_5_str = f" | КФ: Больше={real_over_2_5} / Меньше={real_under_2_5}" if real_over_2_5 else ""
+    odds_1_5_str = f" | КФ: {real_over_1_5}" if real_over_1_5 else ""
+
     return f"""
 ⚽ *АНАЛИЗ ГОЛОВ — {home_team} vs {away_team}*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -271,10 +297,10 @@ def format_goals_report(home_team, away_team, goals_result):
 _{summary}_
 
 📊 *ТОТАЛ ГОЛОВ:*
-{conf_icon(over_2_5_conf)} Тотал 2.5: *{over_2_5}* ({over_2_5_conf}%)
+{conf_icon(over_2_5_conf)} Тотал 2.5: *{over_2_5}* ({over_2_5_conf}%){odds_2_5_str}
 _{over_2_5_reason}_
 
-{conf_icon(over_1_5_conf)} Тотал 1.5: *{over_1_5}* ({over_1_5_conf}%)
+{conf_icon(over_1_5_conf)} Тотал 1.5: *{over_1_5}* ({over_1_5_conf}%){odds_1_5_str}
 
 🥅 *ОБЕ ЗАБЬЮТ:*
 {conf_icon(btts_conf)} Обе забьют: *{btts}* ({btts_conf}%)
@@ -645,7 +671,7 @@ _{signal_reason}_
             cached["prophet_data"], cached["news_summary"],
             cached["bookmaker_odds"], cached["gpt_result"], cached["llama_result"]
         )
-        report = format_goals_report(cached["home_team"], cached["away_team"], goals_result)
+        report = format_goals_report(cached["home_team"], cached["away_team"], goals_result, cached["bookmaker_odds"])
         await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_back_to_markets_keyboard(match_index))
 
     # --- Рынок: Угловые ---
