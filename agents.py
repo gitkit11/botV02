@@ -27,7 +27,7 @@ def call_gpt(prompt, model="gpt-4o-mini"):
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a world-class expert. Respond ONLY with a valid JSON object."},
+                {"role": "system", "content": "Ты — эксперт мирового класса. Отвечай ТОЛЬКО валидным JSON объектом. Все текстовые поля пиши на русском языке."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
@@ -45,25 +45,23 @@ def call_gpt(prompt, model="gpt-4o-mini"):
 def run_statistician_agent(prophet_data):
     """Агент-Статистик: анализирует только цифры."""
     prompt = f"""
-    You are a world-class football statistician. Your sole focus is quantitative data.
-    Analyze the provided statistical data for an upcoming match.
+    Ты — лучший в мире футбольный статистик. Твоя задача — анализировать только числовые данные.
+    Проанализируй предоставленные статистические данные для предстоящего матча.
 
-    **Input Data:**
-    - Prophet AI (LSTM model) prediction based on 30 years of history:
-      - Home Win Probability: {prophet_data[1]:.2%}
-      - Draw Probability: {prophet_data[0]:.2%}
-      - Away Win Probability: {prophet_data[2]:.2%}
-    
-    **Your Task:**
-    Based *only* on this statistical input, provide your final probability assessment.
-    Do not invent or assume any other information. Your output must be a pure reflection of the provided stats.
+    Входные данные (нейросеть Пророк, обученная на 30 годах истории):
+    - Вероятность победы хозяев: {prophet_data[1]:.2%}
+    - Вероятность ничьей: {prophet_data[0]:.2%}
+    - Вероятность победы гостей: {prophet_data[2]:.2%}
 
-    **Output Format (JSON only):**
+    Твоя задача: на основе ТОЛЬКО этих данных дай итоговую оценку вероятностей.
+    Не придумывай и не предполагай ничего лишнего. Твой вывод должен отражать предоставленную статистику.
+
+    Формат ответа (только JSON):
     {{
-      "analysis_summary": "A brief summary of the statistical outlook.",
-      "home_win_prob": <float between 0.0 and 1.0>,
-      "draw_prob": <float between 0.0 and 1.0>,
-      "away_win_prob": <float between 0.0 and 1.0>
+      "analysis_summary": "Краткое резюме статистической картины на русском языке (2-3 предложения).",
+      "home_win_prob": <число от 0.0 до 1.0>,
+      "draw_prob": <число от 0.0 до 1.0>,
+      "away_win_prob": <число от 0.0 до 1.0>
     }}
     """
     return call_gpt(prompt)
@@ -71,22 +69,22 @@ def run_statistician_agent(prophet_data):
 def run_scout_agent(home_team, away_team, news_summary):
     """Агент-Разведчик: анализирует новости и настроения."""
     prompt = f"""
-    You are an investigative sports journalist. You find the hidden narratives that stats don't show.
-    Analyze the provided news summary for the match: **{home_team} vs {away_team}**.
+    Ты — лучший спортивный журналист-аналитик. Ты находишь скрытые факторы, которые не видны в статистике.
+    Проанализируй новостной фон для матча: {home_team} vs {away_team}.
 
-    **Input Data (News Summary):**
+    Входные данные (новостной фон):
     {news_summary}
 
-    **Your Task:**
-    1. Identify key qualitative factors: confirmed injuries, team morale, manager pressure, player conflicts, etc.
-    2. Synthesize this into a brief, impactful summary highlighting the most critical points for each team.
-    3. Provide a sentiment score from -1.0 (very negative) to +1.0 (very positive) for each team based on the news.
+    Твоя задача:
+    1. Определи ключевые качественные факторы: травмы, моральный дух, давление на тренера, конфликты, мотивация и т.д.
+    2. Составь краткое, но ёмкое резюме, выделяя самые важные моменты для каждой команды.
+    3. Дай оценку настроения от -1.0 (очень негативное) до +1.0 (очень позитивное) для каждой команды.
 
-    **Output Format (JSON only):**
+    Формат ответа (только JSON):
     {{
-      "analysis_summary": "A summary of the key findings from the news.",
-      "home_team_sentiment": <float between -1.0 and 1.0>,
-      "away_team_sentiment": <float between -1.0 and 1.0>
+      "analysis_summary": "Резюме ключевых выводов из новостей на русском языке (2-3 предложения).",
+      "home_team_sentiment": <число от -1.0 до 1.0>,
+      "away_team_sentiment": <число от -1.0 до 1.0>
     }}
     """
     return call_gpt(prompt)
@@ -94,36 +92,36 @@ def run_scout_agent(home_team, away_team, news_summary):
 def run_arbitrator_agent(stats_result, scout_result, bookmaker_odds):
     """Агент-Арбитр: объединяет все данные и выносит вердикт."""
     prompt = f"""
-    You are the final Arbitrator, a master betting analyst. You synthesize reports from your two specialist agents to make the final, decisive call.
+    Ты — финальный Арбитр, мастер-аналитик ставок. Ты синтезируешь отчёты двух агентов и выносишь окончательное решение.
 
-    **Agent 1: The Statistician's Report**
-    - Summary: {stats_result.get('analysis_summary', 'N/A')}
-    - Probabilities: Home Win: {stats_result.get('home_win_prob', 0.33):.2%}, Draw: {stats_result.get('draw_prob', 0.33):.2%}, Away Win: {stats_result.get('away_win_prob', 0.33):.2%}
+    Отчёт Агента 1 (Статистик):
+    - Резюме: {stats_result.get('analysis_summary', 'Нет данных')}
+    - Вероятности: Победа хозяев: {stats_result.get('home_win_prob', 0.33):.2%}, Ничья: {stats_result.get('draw_prob', 0.33):.2%}, Победа гостей: {stats_result.get('away_win_prob', 0.33):.2%}
 
-    **Agent 2: The Scout's Report**
-    - Summary: {scout_result.get('analysis_summary', 'N/A')}
-    - Sentiments: Home Team: {scout_result.get('home_team_sentiment', 0.0)}, Away Team: {scout_result.get('away_team_sentiment', 0.0)}
+    Отчёт Агента 2 (Разведчик):
+    - Резюме: {scout_result.get('analysis_summary', 'Нет данных')}
+    - Настроения: Хозяева: {scout_result.get('home_team_sentiment', 0.0)}, Гости: {scout_result.get('away_team_sentiment', 0.0)}
 
-    **Market Data: Bookmaker Odds**
-    - Home Win: {bookmaker_odds.get('home_win', 0)}
-    - Draw: {bookmaker_odds.get('draw', 0)}
-    - Away Win: {bookmaker_odds.get('away_win', 0)}
+    Данные букмекеров:
+    - Победа хозяев (П1): {bookmaker_odds.get('home_win', 0)}
+    - Ничья (X): {bookmaker_odds.get('draw', 0)}
+    - Победа гостей (П2): {bookmaker_odds.get('away_win', 0)}
 
-    **Your Task:**
-    1.  **Synthesize:** Weigh the statistical probabilities against the qualitative news factors. The statistician is more objective (weight ~60%), the scout provides crucial context (weight ~40%).
-    2.  **Final Probabilities:** Produce your final, blended probabilities for the three outcomes.
-    3.  **Find Value:** Compare your final probabilities to the bookmaker's implied probabilities (1 / odds). Identify any "Value Bet" where your assessed probability is significantly higher than the market's.
-    4.  **Kelly Criterion:** Based on the best value bet, calculate the recommended stake as a percentage of the bankroll. Formula: Stake % = ((Probability * Odds) - 1) / (Odds - 1). If no value, stake is 0.
-    5.  **Verdict:** State your final verdict clearly.
+    Твои задачи:
+    1. Синтез: взвесь статистические вероятности и качественные факторы. Статистик весит ~60%, Разведчик ~40%.
+    2. Итоговые вероятности: выдай финальные смешанные вероятности для трёх исходов.
+    3. Поиск ценности: сравни свои вероятности с подразумеваемыми вероятностями букмекера (1 / коэффициент). Найди Value Bet там, где твоя вероятность значительно выше рыночной.
+    4. Критерий Келли: рассчитай рекомендуемый размер ставки в % от банка. Формула: Ставка% = ((Вероятность * Коэффициент) - 1) / (Коэффициент - 1). Если нет ценности — ставка 0.
+    5. Вердикт: чётко сформулируй финальное решение.
 
-    **Output Format (JSON only):**
+    Формат ответа (только JSON):
     {{
-      "final_verdict_summary": "A 2-3 sentence summary explaining your final decision.",
-      "recommended_outcome": "Home Win", "Draw", or "Away Win",
-      "final_confidence_percent": <int between 0 and 100>,
-      "bookmaker_odds": <float, odds for the recommended outcome>,
-      "expected_value_percent": <float, the edge over the bookmaker>,
-      "recommended_stake_percent": <float, kelly criterion result>
+      "final_verdict_summary": "Резюме финального решения на русском языке (2-3 предложения).",
+      "recommended_outcome": "Победа хозяев" или "Ничья" или "Победа гостей",
+      "final_confidence_percent": <целое число от 0 до 100>,
+      "bookmaker_odds": <число, коэффициент на рекомендуемый исход>,
+      "expected_value_percent": <число, преимущество над букмекером в процентах>,
+      "recommended_stake_percent": <число, результат критерия Келли>
     }}
     """
     return call_gpt(prompt)
