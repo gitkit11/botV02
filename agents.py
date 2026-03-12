@@ -179,7 +179,7 @@ def run_llama_agent(home_team, away_team, prophet_data, news_summary, bookmaker_
       "both_teams_to_score_prediction": "Да" или "Нет"
     }}
     """
-    return call_ai(prompt, groq_client, "llama3-70b-8192")
+    return call_ai(prompt, groq_client, "llama-3.3-70b-versatile")
 
 def run_llama_via_gpt(home_team, away_team, prophet_data, news_summary, bookmaker_odds):
     """Запасной вариант: используем GPT вместо Llama."""
