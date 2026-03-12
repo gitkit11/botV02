@@ -347,3 +347,212 @@ def run_handicap_market_agent(home_team, away_team, prophet_data, bookmaker_odds
     }}
     """
     return call_ai(prompt, client, "gpt-4o-mini")
+
+
+# ─── MIXTRAL АГЕНТ (3-й независимый агент) ──────────────────────────────────
+
+def run_mixtral_agent(home_team, away_team, prophet_data, news_summary, bookmaker_odds,
+                      team_stats_text=None, poisson_data=None, elo_data=None):
+    """
+    Mixtral-8x7b через Groq — тактический анализ и паттерны.
+    Третий независимый агент для более надёжного консенсуса.
+    """
+    if not groq_client:
+        print("[Mixtral] Groq недоступен, пропускаю Mixtral агента.")
+        return {"error": "Groq недоступен"}
+
+    poisson_block = ""
+    if poisson_data:
+        poisson_block = f"""
+4. Модель Пуассона (xG-based):
+   П1={round(poisson_data.get('home_win', 0)*100)}%, Х={round(poisson_data.get('draw', 0)*100)}%, П2={round(poisson_data.get('away_win', 0)*100)}%
+   Тотал >2.5: {round(poisson_data.get('over_25', 0)*100)}%, Обе забьют: {round(poisson_data.get('btts', 0)*100)}%
+   Вероятный счёт: {poisson_data.get('most_likely_score', 'N/A')}
+"""
+
+    elo_block = ""
+    if elo_data:
+        elo_block = f"""
+5. ELO рейтинги:
+   {home_team}: {elo_data.get('home_elo', 1500)} | {away_team}: {elo_data.get('away_elo', 1500)}
+   ELO П1={round(elo_data.get('home', 0)*100)}%, ELO П2={round(elo_data.get('away', 0)*100)}%
+"""
+
+    stats_block = f"\n3. Статистика сезона:\n{team_stats_text}" if team_stats_text else ""
+
+    prompt = f"""
+Ты — тактический аналитик ставок на футбол. Специализируешься на анализе тактических схем,
+стиля игры, прессинга и паттернов результатов в схожих матчах.
+
+Матч: {home_team} (хозяева) vs {away_team} (гости)
+
+Данные:
+1. Нейросеть (10 сезонов): П1={prophet_data[1]:.2%}, Х={prophet_data[0]:.2%}, П2={prophet_data[2]:.2%}
+2. Новостной фон: {news_summary}
+{stats_block}{poisson_block}{elo_block}
+Коэффициенты: П1={bookmaker_odds.get('home_win', 0)}, Х={bookmaker_odds.get('draw', 0)}, П2={bookmaker_odds.get('away_win', 0)}
+
+Твои задачи:
+1. Дай ТАКТИЧЕСКИЙ прогноз на исход — с акцентом на стиль игры команд
+2. Прогноз тотала голов: Больше 2.5 или Меньше 2.5 (с учётом xG если есть)
+3. Прогноз "Обе забьют": Да или Нет
+4. Оцени уверенность в прогнозе от 0 до 100%
+5. Укажи 2-3 ключевых тактических фактора
+
+Формат ответа (только JSON):
+{{
+  "analysis_summary": "Тактический анализ (2-3 предложения с конкретными цифрами).",
+  "recommended_outcome": "Победа хозяев" или "Ничья" или "Победа гостей",
+  "home_win_prob": <число от 0.0 до 1.0>,
+  "draw_prob": <число от 0.0 до 1.0>,
+  "away_win_prob": <число от 0.0 до 1.0>,
+  "final_confidence_percent": <целое число от 0 до 100>,
+  "total_goals_prediction": "Больше 2.5" или "Меньше 2.5",
+  "total_goals_reasoning": "Тактическое обоснование (1 предложение)",
+  "both_teams_to_score_prediction": "Да" или "Нет",
+  "btts_reasoning": "Обоснование (1 предложение)",
+  "key_tactical_factors": ["фактор 1", "фактор 2", "фактор 3"]
+}}
+"""
+    result = call_ai(prompt, groq_client, "mixtral-8x7b-32768")
+    print(f"[Mixtral] Результат: {str(result)[:100]}...")
+    return result
+
+
+# ─── МАТЕМАТИЧЕСКИЙ АНСАМБЛЬ ─────────────────────────────────────────────────
+
+def build_math_ensemble(prophet_data, poisson_probs, elo_probs,
+                        gpt_result, llama_result, mixtral_result=None,
+                        bookmaker_odds=None):
+    """
+    Взвешенный ансамбль всех моделей.
+
+    Веса:
+    - Пуассон (xG): 35%
+    - ELO: 25%
+    - Пророк (нейросеть): 20%
+    - AI агенты: 15%
+    - Букмекерские вероятности: 5%
+    """
+    # Пуассон
+    p_home = poisson_probs.get('home_win', 0.33) if poisson_probs else 0.33
+    p_draw = poisson_probs.get('draw', 0.28) if poisson_probs else 0.28
+    p_away = poisson_probs.get('away_win', 0.33) if poisson_probs else 0.33
+
+    # ELO
+    e_home = elo_probs.get('home', 0.33) if elo_probs else 0.33
+    e_draw = elo_probs.get('draw', 0.28) if elo_probs else 0.28
+    e_away = elo_probs.get('away', 0.33) if elo_probs else 0.33
+
+    # Пророк
+    pr_home = float(prophet_data[1]) if prophet_data else 0.33
+    pr_draw = float(prophet_data[0]) if prophet_data else 0.28
+    pr_away = float(prophet_data[2]) if prophet_data else 0.33
+
+    # AI агенты — усредняем
+    ai_home, ai_draw, ai_away = 0.0, 0.0, 0.0
+    ai_count = 0
+    for agent_result in [gpt_result, llama_result, mixtral_result]:
+        if agent_result and not agent_result.get('error'):
+            ai_home += float(agent_result.get('home_win_prob', 0.33))
+            ai_draw += float(agent_result.get('draw_prob', 0.28))
+            ai_away += float(agent_result.get('away_win_prob', 0.33))
+            ai_count += 1
+    if ai_count > 0:
+        ai_home /= ai_count
+        ai_draw /= ai_count
+        ai_away /= ai_count
+    else:
+        ai_home, ai_draw, ai_away = 0.33, 0.28, 0.33
+
+    # Букмекерские вероятности
+    bk_home, bk_draw, bk_away = 0.33, 0.28, 0.33
+    if bookmaker_odds:
+        raw_h = 1 / bookmaker_odds.get('home_win', 3.0) if bookmaker_odds.get('home_win', 0) > 0 else 0.33
+        raw_d = 1 / bookmaker_odds.get('draw', 3.5) if bookmaker_odds.get('draw', 0) > 0 else 0.28
+        raw_a = 1 / bookmaker_odds.get('away_win', 4.0) if bookmaker_odds.get('away_win', 0) > 0 else 0.33
+        total_bk = raw_h + raw_d + raw_a
+        if total_bk > 0:
+            bk_home, bk_draw, bk_away = raw_h/total_bk, raw_d/total_bk, raw_a/total_bk
+
+    # Взвешенный ансамбль
+    w_poisson = 0.35
+    w_elo = 0.25
+    w_prophet = 0.20
+    w_ai = 0.15
+    w_book = 0.05
+
+    # Если нет Пуассона — перераспределяем
+    if not poisson_probs:
+        w_elo += 0.15
+        w_prophet += 0.10
+        w_ai += 0.10
+        w_poisson = 0.0
+
+    # Если нет ELO — перераспределяем
+    if not elo_probs:
+        w_poisson += 0.15
+        w_prophet += 0.10
+        w_elo = 0.0
+
+    final_home = (p_home*w_poisson + e_home*w_elo + pr_home*w_prophet +
+                  ai_home*w_ai + bk_home*w_book)
+    final_draw = (p_draw*w_poisson + e_draw*w_elo + pr_draw*w_prophet +
+                  ai_draw*w_ai + bk_draw*w_book)
+    final_away = (p_away*w_poisson + e_away*w_elo + pr_away*w_prophet +
+                  ai_away*w_ai + bk_away*w_book)
+
+    total = final_home + final_draw + final_away
+    if total > 0:
+        final_home /= total
+        final_draw /= total
+        final_away /= total
+
+    return {
+        'home': round(final_home, 4),
+        'draw': round(final_draw, 4),
+        'away': round(final_away, 4),
+        'weights': {
+            'poisson': w_poisson,
+            'elo': w_elo,
+            'prophet': w_prophet,
+            'ai': w_ai,
+            'bookmaker': w_book,
+        }
+    }
+
+
+def calculate_value_bets(ensemble_probs, bookmaker_odds):
+    """
+    Находит ставки с положительным ожидаемым значением (EV > 5%).
+    Возвращает список рекомендаций.
+    """
+    recommendations = []
+
+    outcome_map = {
+        'home': ('П1', bookmaker_odds.get('home_win', 0)),
+        'draw': ('Х', bookmaker_odds.get('draw', 0)),
+        'away': ('П2', bookmaker_odds.get('away_win', 0)),
+    }
+
+    for key, (label, odds) in outcome_map.items():
+        if odds <= 1.0:
+            continue
+        our_prob = ensemble_probs.get(key, 0)
+        ev = our_prob * odds - 1
+        if ev > 0.05:
+            b = odds - 1
+            q = 1 - our_prob
+            kelly = max(0, min((our_prob * b - q) / b, 0.20))  # Макс 20% банка
+            recommendations.append({
+                'outcome': label,
+                'odds': odds,
+                'our_prob': round(our_prob * 100, 1),
+                'book_prob': round(100 / odds, 1),
+                'ev': round(ev * 100, 1),
+                'kelly': round(kelly * 100, 1),
+            })
+
+    # Сортируем по EV
+    recommendations.sort(key=lambda x: x['ev'], reverse=True)
+    return recommendations

@@ -18,15 +18,23 @@ from oracle_ai import oracle_analyze
 from agents import (
     run_statistician_agent, run_scout_agent, run_arbitrator_agent,
     run_llama_agent, run_goals_market_agent,
-    run_corners_market_agent, run_cards_market_agent, run_handicap_market_agent
+    run_corners_market_agent, run_cards_market_agent, run_handicap_market_agent,
+    run_mixtral_agent, build_math_ensemble, calculate_value_bets
 )
+from math_model import (
+    load_elo_ratings, save_elo_ratings, elo_win_probabilities,
+    poisson_match_probabilities, calculate_expected_goals, format_math_report
+)
+# Загружаем ELO рейтинги при старте
+_elo_ratings = load_elo_ratings()
 from api_football import get_match_stats
 try:
-    from understat_stats import format_xg_stats
+    from understat_stats import format_xg_stats, get_team_xg_stats
     UNDERSTAT_AVAILABLE = True
 except ImportError:
     UNDERSTAT_AVAILABLE = False
     def format_xg_stats(h, a, s='2024'): return ""
+    def get_team_xg_stats(t, s='2024'): return None
 from database import init_db, save_prediction, get_statistics, get_pending_predictions, update_result, get_recent_predictions
 
 # --- 1. Настройка логирования ---
@@ -249,8 +257,10 @@ def build_back_to_markets_keyboard(match_index):
 
 # --- 7. Форматирование отчётов ---
 
-def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_result, llama_result):
-    """Форматирует главный отчёт анализа матча."""
+def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_result, llama_result,
+                       mixtral_result=None, poisson_probs=None, elo_probs=None, ensemble_probs=None,
+                       home_xg_stats=None, away_xg_stats=None, value_bets=None):
+    """Форматирует главный отчёт анализа матча с полным математическим анализом."""
 
     home_prob = prophet_data[1] * 100
     draw_prob = prophet_data[0] * 100
@@ -279,11 +289,101 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     llama_total_reason = llama_result.get("total_goals_reasoning", "")
     llama_btts = llama_result.get("both_teams_to_score_prediction", "—")
 
-    models_agree = (gpt_verdict_raw.lower() in llama_verdict_raw.lower() or
-                    llama_verdict_raw.lower() in gpt_verdict_raw.lower())
-    agreement_text = "✅ Обе модели согласны!" if models_agree else "⚠️ Модели расходятся во мнениях"
+    # Mixtral агент
+    mixtral_verdict_raw = ""
+    mixtral_verdict = ""
+    mixtral_confidence = 0
+    mixtral_summary = ""
+    if mixtral_result and not mixtral_result.get('error'):
+        mixtral_verdict_raw = mixtral_result.get("recommended_outcome", "")
+        mixtral_verdict = translate_outcome(mixtral_verdict_raw, home_team, away_team)
+        mixtral_confidence = mixtral_result.get("final_confidence_percent", 0)
+        mixtral_summary = mixtral_result.get("analysis_summary", "")
+
+    # Консенсус всех агентов
+    all_verdicts = [v for v in [gpt_verdict_raw, llama_verdict_raw, mixtral_verdict_raw] if v]
+    def _outcome_key(v):
+        v = v.lower()
+        if 'хозяев' in v or 'home' in v: return 'home'
+        if 'гостей' in v or 'away' in v: return 'away'
+        return 'draw'
+    outcome_counts = {}
+    for v in all_verdicts:
+        k = _outcome_key(v)
+        outcome_counts[k] = outcome_counts.get(k, 0) + 1
+    max_count = max(outcome_counts.values()) if outcome_counts else 0
+    if max_count >= 2:
+        agreement_text = f"✅ {max_count}/{len(all_verdicts)} агентов согласны!"
+    else:
+        agreement_text = "⚠️ Агенты расходятся во мнениях"
 
     signal_icon = "🔥 СИГНАЛ: СТАВИТЬ!" if bet_signal == "СТАВИТЬ" else "⏸ СИГНАЛ: ПРОПУСТИТЬ"
+
+    # xG блок
+    xg_block = ""
+    if home_xg_stats or away_xg_stats:
+        xg_lines = ["📊 *xG СТАТИСТИКА (Understat):*"]
+        if home_xg_stats:
+            xg_lines.append(
+                f"🏠 {home_team}: xG={home_xg_stats.get('avg_xg_last5','?')} | "
+                f"xGA={home_xg_stats.get('avg_xga_last5','?')} | "
+                f"Форма: {home_xg_stats.get('form_last5','?')}"
+            )
+        if away_xg_stats:
+            xg_lines.append(
+                f"✈️ {away_team}: xG={away_xg_stats.get('avg_xg_last5','?')} | "
+                f"xGA={away_xg_stats.get('avg_xga_last5','?')} | "
+                f"Форма: {away_xg_stats.get('form_last5','?')}"
+            )
+        xg_block = "\n".join(xg_lines)
+
+    # Пуассон блок
+    poisson_block = ""
+    if poisson_probs:
+        poisson_block = (
+            f"🎯 *ПУАССОН (xG-модель):*\n"
+            f" П1: {round(poisson_probs['home_win']*100)}% | Х: {round(poisson_probs['draw']*100)}% | П2: {round(poisson_probs['away_win']*100)}%\n"
+            f" Тотал >2.5: {round(poisson_probs['over_25']*100)}% | Обе забьют: {round(poisson_probs['btts']*100)}%\n"
+            f" Счёт: {poisson_probs['most_likely_score']} ({round(poisson_probs['most_likely_score_prob']*100)}%)"
+        )
+
+    # ELO блок
+    elo_block = ""
+    if elo_probs:
+        elo_block = (
+            f"⚡ *ELO РЕЙТИНГ:*\n"
+            f" {home_team}: {elo_probs.get('home_elo',1500)} | {away_team}: {elo_probs.get('away_elo',1500)}\n"
+            f" ELO П1: {round(elo_probs.get('home',0)*100)}% | Х: {round(elo_probs.get('draw',0)*100)}% | П2: {round(elo_probs.get('away',0)*100)}%"
+        )
+
+    # Ансамбль блок
+    ensemble_block = ""
+    if ensemble_probs:
+        ensemble_block = (
+            f"🔢 *АНСАМБЛЬ (взвешенный):*\n"
+            f" П1: {round(ensemble_probs['home']*100)}% | Х: {round(ensemble_probs['draw']*100)}% | П2: {round(ensemble_probs['away']*100)}%"
+        )
+
+    # Value bets блок
+    value_block = ""
+    if value_bets:
+        vlines = ["💰 *VALUE СТАВКИ:*"]
+        for vb in value_bets[:2]:  # Показываем топ-2
+            vlines.append(
+                f" ✅ {vb['outcome']} @ {vb['odds']} | EV: +{vb['ev']}% | Келли: {vb['kelly']}%"
+            )
+        value_block = "\n".join(vlines)
+
+    # Mixtral блок
+    mixtral_block = ""
+    if mixtral_result and not mixtral_result.get('error') and mixtral_summary:
+        mixtral_block = f"🔮 *Mixtral 8x7B:*\n_{mixtral_summary}_\n\n⚔️ Вердикт: {mixtral_verdict} ({mixtral_confidence}%)"
+
+    # Собираем блоки
+    math_section = ""
+    math_parts = [p for p in [xg_block, poisson_block, elo_block, ensemble_block] if p]
+    if math_parts:
+        math_section = "\n\n".join(math_parts)
 
     report = f"""
 🏆 *CHIMERA AI v4.0 — АНАЛИЗ МАТЧА*
@@ -294,17 +394,17 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
 📊 *ПРОРОК (нейросеть):*
  П1: {home_prob:.0f}% | Х: {draw_prob:.0f}% | П2: {away_prob:.0f}%
 
-🗞 *ОРАКУЛ (новостной фон):*
+🗣 *ОРАКУЛ (новостной фон):*
  {home_team}: {home_sentiment_label}
  {away_team}: {away_sentiment_label}
-
+{(chr(10) + math_section) if math_section else ""}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 🧠 *GPT-4o (Маэстро):*
 _{gpt_summary}_
 
 🤖 *Llama 3.3 70B:*
 _{llama_summary}_
-
+{(chr(10) + mixtral_block) if mixtral_block else ""}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚖️ *ВЕРДИКТ МАЭСТРО:*
 {conf_icon(gpt_confidence)} Исход: {gpt_verdict}
@@ -318,7 +418,7 @@ _{llama_summary}_
 {conf_icon(llama_confidence)} Уверенность: {llama_confidence}%
 ⚽ Тотал: {llama_total} _{llama_total_reason}_
 🥅 Обе забьют: {llama_btts}
-
+{(chr(10) + value_block) if value_block else ""}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 {agreement_text}
 *{signal_icon}*
@@ -602,7 +702,14 @@ async def handle_callback(call: types.CallbackQuery):
             report = format_main_report(
                 home_team, away_team,
                 cached["prophet_data"], cached["oracle_results"],
-                cached["gpt_result"], cached["llama_result"]
+                cached["gpt_result"], cached["llama_result"],
+                mixtral_result=cached.get("mixtral_result"),
+                poisson_probs=cached.get("poisson_probs"),
+                elo_probs=cached.get("elo_probs"),
+                ensemble_probs=cached.get("ensemble_probs"),
+                home_xg_stats=cached.get("home_xg_stats"),
+                away_xg_stats=cached.get("away_xg_stats"),
+                value_bets=cached.get("value_bets"),
             )
             await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_markets_keyboard(match_index))
 
@@ -621,7 +728,8 @@ async def handle_callback(call: types.CallbackQuery):
             f"⏳ *Запускаю анализ матча...*\n\n"
             f"⚽ {home_team} vs {away_team}\n\n"
             f"🔮 Пророк... ✅\n"
-            f"📰 Оракул (поиск новостей)...",
+            f"📰 Оракул (поиск новостей)...\n"
+            f"📊 xG + Пуассон + ELO...",
             parse_mode="Markdown"
         )
 
@@ -640,7 +748,8 @@ async def handle_callback(call: types.CallbackQuery):
             f"⏳ *Запускаю анализ матча...*\n\n"
             f"⚽ {home_team} vs {away_team}\n\n"
             f"🔮 Пророк... ✅\n"
-            f"📰 Оракул... ✅\n"
+            f"📰 Оракл... ✅\n"
+            f"📊 xG + Пуассон + ELO... ✅\n"
             f"🧠 GPT-4o анализирует...",
             parse_mode="Markdown"
         )
@@ -656,18 +765,43 @@ async def handle_callback(call: types.CallbackQuery):
 
         # Получаем xG статистику из Understat (если доступна)
         xg_stats_text = ""
+        home_xg_stats = None
+        away_xg_stats = None
         if UNDERSTAT_AVAILABLE:
             try:
+                home_xg_stats = get_team_xg_stats(home_team)
+                away_xg_stats = get_team_xg_stats(away_team)
                 xg_stats_text = format_xg_stats(home_team, away_team)
                 if xg_stats_text:
                     print(f"[Understat] xG статистика получена для {home_team} vs {away_team}")
-                    # Добавляем xG к общей статистике
                     if team_stats_text:
                         team_stats_text = team_stats_text + "\n\n" + xg_stats_text
                     else:
                         team_stats_text = xg_stats_text
             except Exception as _xe:
                 print(f"[Understat] Недоступен: {_xe}")
+
+        # Пуассон + ELO математические модели
+        poisson_probs = None
+        elo_probs = None
+        try:
+            # ELO рейтинги
+            elo_probs = elo_win_probabilities(home_team, away_team, _elo_ratings)
+            print(f"[ELO] {home_team}={elo_probs['home_elo']} vs {away_team}={elo_probs['away_elo']}")
+        except Exception as _ee:
+            print(f"[ELO] Ошибка: {_ee}")
+
+        try:
+            # Пуассон на основе xG
+            if home_xg_stats and away_xg_stats:
+                home_exp, away_exp = calculate_expected_goals(home_xg_stats, away_xg_stats)
+            else:
+                # Используем среднелиговые значения
+                home_exp, away_exp = 1.35, 1.10
+            poisson_probs = poisson_match_probabilities(home_exp, away_exp)
+            print(f"[Пуассон] xG хозяев={home_exp:.2f}, гостей={away_exp:.2f}")
+        except Exception as _pe:
+            print(f"[Пуассон] Ошибка: {_pe}")
 
         stats_result = run_statistician_agent(prophet_data, team_stats_text)
         scout_result = run_scout_agent(home_team, away_team, news_summary)
@@ -677,13 +811,43 @@ async def handle_callback(call: types.CallbackQuery):
             f"⏳ *Запускаю анализ матча...*\n\n"
             f"⚽ {home_team} vs {away_team}\n\n"
             f"🔮 Пророк... ✅\n"
-            f"📰 Оракул... ✅\n"
+            f"📰 Оракл... ✅\n"
+            f"📊 xG + Пуассон + ELO... ✅\n"
             f"🧠 GPT-4o... ✅\n"
-            f"🤖 Llama 3.3 70B анализирует...",
+            f"🤖 Llama 3.3 70B анализирует...\n"
+            f"🔮 Mixtral 8x7B анализирует...",
             parse_mode="Markdown"
         )
 
         llama_result = run_llama_agent(home_team, away_team, prophet_data, news_summary, bookmaker_odds, team_stats_text)
+
+        # Третий агент: Mixtral 8x7B
+        mixtral_result = run_mixtral_agent(
+            home_team, away_team, prophet_data, news_summary, bookmaker_odds,
+            team_stats_text, poisson_probs, elo_probs
+        )
+
+        # Взвешенный ансамбль всех моделей
+        ensemble_probs = None
+        value_bets = []
+        try:
+            ensemble_probs = build_math_ensemble(
+                prophet_data, poisson_probs, elo_probs,
+                gpt_result, llama_result, mixtral_result,
+                bookmaker_odds
+            )
+            # Ищем value bets
+            odds_for_value = {
+                'home': bookmaker_odds.get('home_win', 0),
+                'draw': bookmaker_odds.get('draw', 0),
+                'away': bookmaker_odds.get('away_win', 0),
+            }
+            value_bets = calculate_value_bets(ensemble_probs, odds_for_value)
+            print(f"[Ансамбль] П1={round(ensemble_probs['home']*100)}% | Х={round(ensemble_probs['draw']*100)}% | П2={round(ensemble_probs['away']*100)}%")
+            if value_bets:
+                print(f"[Value Bets] Найдено: {len(value_bets)} ставок с EV>5%")
+        except Exception as _ense:
+            print(f"[Ансамбль] Ошибка: {_ense}")
 
         # Сохраняем в кэш для повторного использования при выборе рынков
         analysis_cache[match_index] = {
@@ -693,6 +857,13 @@ async def handle_callback(call: types.CallbackQuery):
             "bookmaker_odds": bookmaker_odds,
             "gpt_result": gpt_result,
             "llama_result": llama_result,
+            "mixtral_result": mixtral_result,
+            "poisson_probs": poisson_probs,
+            "elo_probs": elo_probs,
+            "ensemble_probs": ensemble_probs,
+            "home_xg_stats": home_xg_stats,
+            "away_xg_stats": away_xg_stats,
+            "value_bets": value_bets,
             "home_team": home_team,
             "away_team": away_team,
             "match": match,
@@ -724,7 +895,14 @@ async def handle_callback(call: types.CallbackQuery):
         final_report = format_main_report(
             home_team, away_team,
             prophet_data, oracle_results,
-            gpt_result, llama_result
+            gpt_result, llama_result,
+            mixtral_result=mixtral_result,
+            poisson_probs=poisson_probs,
+            elo_probs=elo_probs,
+            ensemble_probs=ensemble_probs,
+            home_xg_stats=home_xg_stats,
+            away_xg_stats=away_xg_stats,
+            value_bets=value_bets,
         )
 
         await call.message.edit_text(
