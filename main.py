@@ -340,8 +340,22 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     # Пуассон блок
     poisson_block = ""
     if poisson_probs:
+        # Индикатор источника данных
+        src = poisson_probs.get('data_source', 'fallback')
+        if src == 'understat':
+            src_icon = "🟢"  # зелёный = реальные данные
+            src_label = "Understat ✅"
+        elif src == 'partial':
+            src_icon = "🟡"  # жёлтый = частичные данные
+            src_label = "частичные данные ⚠️"
+        else:
+            src_icon = "🔴"  # красный = резервные значения
+            src_label = "среднелиговые ❌"
+        home_exp = poisson_probs.get('home_exp', '?')
+        away_exp = poisson_probs.get('away_exp', '?')
         poisson_block = (
-            f"🎯 *ПУАССОН (xG-модель):*\n"
+            f"🎯 *ПУАССОН (xG-модель):* {src_icon} _{src_label}_\n"
+            f" Хозяев xG: {home_exp} | Гости xG: {away_exp}\n"
             f" П1: {round(poisson_probs['home_win']*100)}% | Х: {round(poisson_probs['draw']*100)}% | П2: {round(poisson_probs['away_win']*100)}%\n"
             f" Тотал >2.5: {round(poisson_probs['over_25']*100)}% | Обе забьют: {round(poisson_probs['btts']*100)}%\n"
             f" Счёт: {poisson_probs['most_likely_score']} ({round(poisson_probs['most_likely_score_prob']*100)}%)"
@@ -791,15 +805,36 @@ async def handle_callback(call: types.CallbackQuery):
         except Exception as _ee:
             print(f"[ELO] Ошибка: {_ee}")
 
+        xg_data_source = "fallback"  # Источник данных для Пуассона
         try:
             # Пуассон на основе xG
             if home_xg_stats and away_xg_stats:
                 home_exp, away_exp = calculate_expected_goals(home_xg_stats, away_xg_stats)
+                xg_data_source = "understat"  # Реальные данные из Understat
+                print(f"[Understat] ✅ Реальные xG: {home_team}={home_xg_stats.get('avg_xg_last5','?')}, {away_team}={away_xg_stats.get('avg_xg_last5','?')}")
+            elif home_xg_stats and not away_xg_stats:
+                # Есть данные только для хозяев
+                home_exp = home_xg_stats.get('avg_xg_last5', 1.35)
+                away_exp = 1.10
+                xg_data_source = "partial"  # Частичные данные
+                print(f"[Understat] ⚠️ Частичные xG: есть данные только для {home_team}")
+            elif not home_xg_stats and away_xg_stats:
+                # Есть данные только для гостей
+                home_exp = 1.35
+                away_exp = away_xg_stats.get('avg_xg_last5', 1.10)
+                xg_data_source = "partial"  # Частичные данные
+                print(f"[Understat] ⚠️ Частичные xG: есть данные только для {away_team}")
             else:
-                # Используем среднелиговые значения
+                # Нет данных — среднелиговые значения
                 home_exp, away_exp = 1.35, 1.10
+                xg_data_source = "fallback"  # Резервные значения
+                print(f"[Understat] ❌ Данных нет — использую среднелиговые ({home_exp}/{away_exp})")
             poisson_probs = poisson_match_probabilities(home_exp, away_exp)
-            print(f"[Пуассон] xG хозяев={home_exp:.2f}, гостей={away_exp:.2f}")
+            # Добавляем источник данных в poisson_probs
+            poisson_probs['data_source'] = xg_data_source
+            poisson_probs['home_exp'] = round(home_exp, 2)
+            poisson_probs['away_exp'] = round(away_exp, 2)
+            print(f"[Пуассон] xG хозяев={home_exp:.2f}, гостей={away_exp:.2f} (источник: {xg_data_source})")
         except Exception as _pe:
             print(f"[Пуассон] Ошибка: {_pe}")
 
