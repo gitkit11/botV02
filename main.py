@@ -341,6 +341,10 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
 
     # Проверяем конфликт между ансамблем и GPT
     conflict_warning = ""
+    ensemble_best_key = None  # будет установлен ниже в блоке ансамбля
+    if ensemble_probs:
+        _probs_tmp = {k: ensemble_probs.get(k, 0) for k in ['home', 'draw', 'away']}
+        ensemble_best_key = max(_probs_tmp, key=_probs_tmp.get)
     if ensemble_best_key:
         gpt_key = _outcome_key(gpt_verdict_raw)
         if gpt_key != ensemble_best_key:

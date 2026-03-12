@@ -356,7 +356,7 @@ def run_mixtral_agent(home_team, away_team, prophet_data, news_summary, bookmake
     """
     Gemma2-9b-it через Groq — тактический анализ и паттерны.
     Третий независимый агент для более надёжного консенсуса.
-    (mixtral-8x7b-32768 удалён из Groq, заменён на gemma2-9b-it)
+    (mixtral-8x7b-32768 удалён из Groq, заменён на llama-3.1-8b-instant)
     """
     if not groq_client:
         print("[Gemma2] Groq недоступен, пропускаю третий агент.")  
@@ -415,7 +415,7 @@ def run_mixtral_agent(home_team, away_team, prophet_data, news_summary, bookmake
   "key_tactical_factors": ["фактор 1", "фактор 2", "фактор 3"]
 }}
 """
-    result = call_ai(prompt, groq_client, "gemma2-9b-it")
+    result = call_ai(prompt, groq_client, "llama-3.1-8b-instant")
     print(f"[Gemma2] Результат: {str(result)[:100]}...")
     return result
 

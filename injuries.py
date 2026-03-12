@@ -56,7 +56,15 @@ def extract_injuries_with_ai(team_name: str, news_articles: list) -> dict:
 
     try:
         from openai import OpenAI
-        client = OpenAI()
+        import os
+        # Читаем ключ из config.py или переменной среды
+        try:
+            from config import OPENAI_API_KEY as _oai_key
+        except ImportError:
+            _oai_key = os.environ.get('OPENAI_API_KEY', '')
+        if not _oai_key:
+            raise ValueError("OPENAI_API_KEY не задан")
+        client = OpenAI(api_key=_oai_key)
 
         # Собираем заголовки и описания
         headlines = []
