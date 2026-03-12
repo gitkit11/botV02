@@ -53,16 +53,41 @@ analysis_cache = {}  # Хранит результаты анализа по mat
 
 # --- 5. Вспомогательные функции ---
 
+# Таблица соответствия названий команд (Odds API → датасет АПЛ)
+TEAM_NAME_MAP = {
+    "Newcastle United": "Newcastle",
+    "Wolverhampton Wanderers": "Wolves",
+    "Leeds United": "Leeds",
+    "Nottingham Forest": "Nott'm Forest",
+    "Manchester City": "Man City",
+    "Manchester United": "Man United",
+    "West Bromwich Albion": "West Brom",
+    "Sheffield Utd": "Sheffield United",
+    "Brighton and Hove Albion": "Brighton",
+    "Brighton & Hove Albion": "Brighton",
+    "Tottenham Hotspur": "Tottenham",
+    "Leicester City": "Leicester",
+    "Aston Villa FC": "Aston Villa",
+    "Ipswich Town": "Ipswich",
+    "AFC Bournemouth": "Bournemouth",
+}
+
+def normalize_team(name):
+    """Нормализует название команды для поиска в датасете."""
+    return TEAM_NAME_MAP.get(name, name)
+
 def get_prophet_prediction(home_team, away_team):
     """Получает предсказание от нейросети Пророк."""
     if not prophet_model or data is None or scaler is None:
         return [0.33, 0.33, 0.34]
     try:
-        home_id = team_encoder.get(home_team)
-        away_id = team_encoder.get(away_team)
+        home_norm = normalize_team(home_team)
+        away_norm = normalize_team(away_team)
+        home_id = team_encoder.get(home_norm)
+        away_id = team_encoder.get(away_norm)
         if home_id is None or away_id is None:
-            print(f"[Пророк] Команды не найдены в энкодере: '{home_team}', '{away_team}'")
-            print(f"[Пророк] Доступные команды: {list(team_encoder.keys())}")
+            print(f"[Пророк] Команды не найдены: '{home_team}'→'{home_norm}', '{away_team}'→'{away_norm}'")
+            print(f"[Пророк] Доступные: {list(team_encoder.keys())}")
             return [0.33, 0.33, 0.34]
         home_data = data[data['HomeTeam_encoded'] == home_id].tail(5)
         away_data = data[data['AwayTeam_encoded'] == away_id].tail(5)
