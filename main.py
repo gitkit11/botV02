@@ -162,11 +162,35 @@ def get_prophet_prediction(home_team, away_team):
         print(f"[Пророк Ошибка] {e}")
         return [0.33, 0.33, 0.34]
 
-def get_matches():
-    """Получает список ближайших матчей через The Odds API."""
-    global matches_cache
+# Список лиг для загрузки матчей
+FOOTBALL_LEAGUES = [
+    ("soccer_epl",                    "🏴󠁧󠁢󠁥󠁮󠁧󠁿 АПЛ"),
+    ("soccer_spain_la_liga",           "🇪🇸 Ла Лига"),
+    ("soccer_germany_bundesliga",      "🇩🇪 Бундеслига"),
+    ("soccer_italy_serie_a",           "🇮🇹 Серия А"),
+    ("soccer_france_ligue_one",        "🇫🇷 Лига 1"),
+    ("soccer_uefa_champs_league",      "🏆 Лига Чемпионов"),
+    ("soccer_uefa_europa_league",      "🥈 Лига Европы"),
+    ("soccer_netherlands_eredivisie",  "🇳🇱 Эредивизи"),
+    ("soccer_portugal_primeira_liga",  "🇵🇹 Примейра"),
+    ("soccer_turkey_super_league",     "🇹🇷 Суперлига"),
+]
+
+# Текущая выбранная лига
+_current_league = "soccer_epl"
+_last_matches_refresh = 0  # timestamp последнего обновления
+
+def get_matches(league: str = None, force: bool = False):
+    """Получает список ближайших матчей через The Odds API для выбранной лиги."""
+    global matches_cache, _last_matches_refresh, _current_league
+    import time
+    if league:
+        _current_league = league
+    # Автообновление каждые 6 часов
+    if not force and matches_cache and (time.time() - _last_matches_refresh) < 21600:
+        return matches_cache
     try:
-        url = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
+        url = f"https://api.the-odds-api.com/v4/sports/{_current_league}/odds/"
         params = {
             "apiKey": THE_ODDS_API_KEY,
             "regions": "eu",
@@ -175,8 +199,15 @@ def get_matches():
         }
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        matches_cache = response.json()[:10]
-        print(f"[API] Получено {len(matches_cache)} матчей.")
+        data = response.json()
+        # Фильтруем только будущие матчи
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        future = [m for m in data if m.get('commence_time', '') > now.isoformat()[:19]]
+        matches_cache = future[:15]
+        _last_matches_refresh = time.time()
+        league_name = dict(FOOTBALL_LEAGUES).get(_current_league, _current_league)
+        print(f"[API] {league_name}: получено {len(matches_cache)} матчей.")
         return matches_cache
     except Exception as e:
         print(f"[API Ошибка] {e}")
@@ -242,13 +273,22 @@ def conf_icon(c):
 # --- 6. Клавиатуры ---
 
 def build_main_keyboard():
-    """Строит главную клавиатуру."""
+    """Строит главную клавиатуру с секциями спорта."""
     kb = [
-        [types.KeyboardButton(text="⚽ Выбрать матч для анализа")],
-        [types.KeyboardButton(text="🔄 Обновить матчи")],
+        [types.KeyboardButton(text="⚽ Футбол")],
+        [types.KeyboardButton(text="🎾 Теннис"), types.KeyboardButton(text="🎮 Киберспорт CS2")],
         [types.KeyboardButton(text="📊 Статистика"), types.KeyboardButton(text="💎 VIP-доступ")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+def build_football_keyboard():
+    """Клавиатура футбольного меню с выбором лиги."""
+    builder = InlineKeyboardBuilder()
+    for league_key, league_name in FOOTBALL_LEAGUES:
+        builder.button(text=league_name, callback_data=f"league_{league_key}")
+    builder.button(text="⬅️ Назад", callback_data="back_to_main")
+    builder.adjust(2)
+    return builder.as_markup()
 
 def build_matches_keyboard(matches):
     """Строит клавиатуру со списком матчей с датой и временем."""
@@ -271,6 +311,7 @@ def build_matches_keyboard(matches):
             callback_data=f"m_{i}"
         )
     builder.button(text="🔄 Обновить список", callback_data="refresh_matches")
+    builder.button(text="🏆 Сменить лигу", callback_data="change_league")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -693,15 +734,19 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     get_matches()
+    name = message.from_user.first_name or "друг"
     await message.answer(
-        "🔮 *Chimera AI v4.0* — профессиональный анализ футбольных матчей\n\n"
-        "Используются 4 независимых ИИ:\n"
-        "🔮 Пророк — нейросеть (66,000+ матчей)\n"
-        "📰 Оракул — анализ новостей\n"
-        "🧠 GPT-4o — стратегический анализ\n"
-        "🤖 Llama 3.3 70B — второе независимое мнение\n\n"
-        "После анализа выбирай рынок:\n"
-        "🏆 Победитель | ⚽ Голы | 🚩 Угловые | 🟨 Карточки | ⚖️ Гандикапы",
+        f"🔮 *CHIMERA AI v4.3* — Искусственный Интеллект для ставок\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Привет, *{name}*! 👋\n\n"
+        f"🧠 *5 независимых моделей анализа:*\n"
+        f"🔮 Пророк — нейросеть (66 000+ матчей)\n"
+        f"📰 Оракул — анализ новостей и травм\n"
+        f"🧠 GPT-4o — стратегический анализ\n"
+        f"🤖 Llama 3.3 70B — тактический анализ\n"
+        f"📊 Пуассон + ELO — математическая модель\n\n"
+        f"🏆 *10 лиг футбола:* АПЛ, Ла Лига, Бундеслига, Серия А, Лига 1, ЛЧ и др.\n\n"
+        f"⬇️ Выбери спорт:",
         parse_mode="Markdown",
         reply_markup=build_main_keyboard()
     )
@@ -710,19 +755,30 @@ async def send_welcome(message: types.Message):
 async def handle_text(message: types.Message):
     text = message.text
 
-    if text == "⚽ Выбрать матч для анализа":
-        matches = get_matches()
-        if not matches:
-            await message.answer("❌ Не удалось загрузить матчи. Попробуйте позже.")
-            return
-        await message.answer("Выберите матч для анализа:", reply_markup=build_matches_keyboard(matches))
+    if text == "⚽ Футбол":
+        league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "АПЛ")
+        await message.answer(
+            f"⚽ *Футбол* — выбери лигу:\n"
+            f"Текущая: *{league_name}*",
+            parse_mode="Markdown",
+            reply_markup=build_football_keyboard()
+        )
 
-    elif text == "🔄 Обновить матчи":
-        matches = get_matches()
-        if not matches:
-            await message.answer("❌ Не удалось обновить матчи.")
-            return
-        await message.answer(f"✅ Список обновлён! Найдено {len(matches)} матчей.", reply_markup=build_matches_keyboard(matches))
+    elif text == "🎾 Теннис":
+        await message.answer(
+            "🎾 *Теннис*\n\n"
+            "⏳ Раздел в разработке...\n\n"
+            "Скоро здесь появится анализ матчей ATP, WTA и др.",
+            parse_mode="Markdown"
+        )
+
+    elif text == "🎮 Киберспорт CS2":
+        await message.answer(
+            "🎮 *Киберспорт CS2*\n\n"
+            "⏳ Раздел в разработке...\n\n"
+            "Скоро здесь появится анализ матчей Major, ESL и др.",
+            parse_mode="Markdown"
+        )
 
     elif text == "📊 Статистика":
         stats = get_statistics()
@@ -786,30 +842,61 @@ async def handle_text(message: types.Message):
     elif text == "💎 VIP-доступ":
         await message.answer(
             "💎 *VIP-доступ*\n\n"
-            "Расширенные функции в разработке.\n"
-            "Скоро здесь появятся:\n"
-            "• Анализ Ла Лиги, Бундеслиги, Серии А\n"
-            "• Утренние авто-сигналы лучших матчей\n"
-            "• Детальная статистика ROI",
+            "Уже доступно бесплатно:\n"
+            "✅ 10 лиг футбола\n"
+            "✅ 5 моделей анализа\n"
+            "✅ Травмы и дисквалификации\n"
+            "✅ Value ставки с EV\n\n"
+            "В разработке:\n"
+            "⏳ Утренние авто-сигналы\n"
+            "⏳ Теннис и CS2\n"
+            "⏳ Личная статистика ROI",
             parse_mode="Markdown"
         )
 
 @dp.callback_query()
 async def handle_callback(call: types.CallbackQuery):
 
+    # --- Выбор лиги ---
+    if call.data.startswith("league_"):
+        league_key = call.data[7:]
+        league_name = dict(FOOTBALL_LEAGUES).get(league_key, league_key)
+        matches = get_matches(league=league_key, force=True)
+        if not matches:
+            await call.answer(f"❌ Нет матчей для {league_name}. Попробуйте позже.", show_alert=True)
+            return
+        await call.message.edit_text(
+            f"⚽ *{league_name}* — ближайшие матчи:\nВыберите матч для анализа:",
+            parse_mode="Markdown",
+            reply_markup=build_matches_keyboard(matches)
+        )
+
+    # --- Сменить лигу ---
+    elif call.data == "change_league":
+        league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "АПЛ")
+        await call.message.edit_text(
+            f"⚽ *Футбол* — выбери лигу:\nТекущая: *{league_name}*",
+            parse_mode="Markdown",
+            reply_markup=build_football_keyboard()
+        )
+
     # --- Возврат к списку матчей ---
-    if call.data == "back_to_matches":
+    elif call.data == "back_to_matches":
         if not matches_cache:
             get_matches()
         await call.message.edit_text("Выберите матч для анализа:", reply_markup=build_matches_keyboard(matches_cache))
 
     # --- Обновление матчей ---
     elif call.data == "refresh_matches":
-        matches = get_matches()
+        matches = get_matches(force=True)
         if not matches:
             await call.answer("❌ Не удалось обновить матчи.", show_alert=True)
             return
-        await call.message.edit_text(f"✅ Список обновлён! Найдено {len(matches)} матчей.", reply_markup=build_matches_keyboard(matches))
+        league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "")
+        await call.message.edit_text(
+            f"✅ Список обновлён! {league_name}: {len(matches)} матчей.",
+            reply_markup=build_matches_keyboard(matches)
+        )
 
     # --- Показать меню рынков ---
     elif call.data.startswith("show_markets_"):
@@ -1422,12 +1509,24 @@ async def auto_elo_recalibration_task():
             print(f"[ELO-Авто] Ошибка перекалибровки: {e}")
 
 
+async def auto_refresh_matches_task():
+    """Автоматически обновляет список матчей каждые 6 часов."""
+    while True:
+        await asyncio.sleep(21600)  # 6 часов
+        try:
+            matches = get_matches(force=True)
+            league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "")
+            print(f"[Авто] Список матчей обновлён: {league_name} — {len(matches)} матчей")
+        except Exception as e:
+            print(f"[Авто] Ошибка обновления матчей: {e}")
+
 # --- 11. Запуск бота ---
 async def main():
     bot = Bot(token=TELEGRAM_TOKEN)
-    print("🚀 Chimera AI v4.3: Бот запущен! (Реальный ELO + Форма + Травмы)")
+    print("🚀 Chimera AI v4.4: Бот запущен! (10 лиг + Автообновление + Секции спорта)")
     asyncio.create_task(check_results_task(bot))
     asyncio.create_task(auto_elo_recalibration_task())
+    asyncio.create_task(auto_refresh_matches_task())
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
