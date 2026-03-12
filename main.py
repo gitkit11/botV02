@@ -338,6 +338,14 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     else:
         agreement_text = "⚠️ Агенты расходятся во мнениях"
 
+    # Проверяем конфликт между ансамблем и GPT
+    conflict_warning = ""
+    if ensemble_best_key:
+        gpt_key = _outcome_key(gpt_verdict_raw)
+        if gpt_key != ensemble_best_key:
+            ens_label = {'home': f'П1 ({home_team})', 'draw': 'Ничья', 'away': f'П2 ({away_team})'}[ensemble_best_key]
+            conflict_warning = f"⚠️ КОНФЛИКТ: GPT рекомендует {gpt_verdict}, а математика указывает на {ens_label}"
+
     if bet_signal == "СТАВИТЬ":
         signal_icon = "🔥 СИГНАЛ: СТАВИТЬ!"
     elif value_bets:
@@ -409,18 +417,33 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
 
     # Ансамбль блок
     ensemble_block = ""
+    ensemble_best_key = None
     if ensemble_probs:
-        # Определяем лучший исход по ансамблю
-        best_outcome_key = max(['home', 'draw', 'away'], key=lambda k: ensemble_probs.get(k, 0))
+        probs = {k: ensemble_probs.get(k, 0) for k in ['home', 'draw', 'away']}
+        sorted_probs = sorted(probs.items(), key=lambda x: x[1], reverse=True)
+        best_key, best_val = sorted_probs[0]
+        second_val = sorted_probs[1][1]
+        gap = best_val - second_val
+
         best_outcome_map = {'home': f'П1 ({home_team})', 'draw': 'Ничья', 'away': f'П2 ({away_team})'}
-        best_outcome_label = best_outcome_map[best_outcome_key]
-        best_prob = round(ensemble_probs[best_outcome_key] * 100)
+        best_outcome_label = best_outcome_map[best_key]
+        best_prob = round(best_val * 100)
+        ensemble_best_key = best_key
+
+        # Индикатор уверенности преимущества
+        if gap >= 0.10:
+            conf_label = "🟢 чёткое преимущество"
+        elif gap >= 0.05:
+            conf_label = "🟡 небольшое преимущество"
+        else:
+            conf_label = "🔴 равный матч"
+
         weights = ensemble_probs.get('weights', {})
         w_str = f"Пуассон {round(weights.get('poisson',0)*100)}%+ELO {round(weights.get('elo',0)*100)}%+AI {round(weights.get('ai',0)*100)}%+Бук {round(weights.get('bookmaker',0)*100)}%+Пр {round(weights.get('prophet',0)*100)}%" if weights else ""
         ensemble_block = (
             f"🔢 *АНСАМБЛЬ (взвешенный):*\n"
-            f" П1: {round(ensemble_probs['home']*100)}% | Х: {round(ensemble_probs['draw']*100)}% | П2: {round(ensemble_probs['away']*100)}%\n"
-            f" ▶️ Лучший исход: *{best_outcome_label}* ({best_prob}%)\n"
+            f" П1: {round(probs['home']*100)}% | Х: {round(probs['draw']*100)}% | П2: {round(probs['away']*100)}%\n"
+            f" {conf_label}: *{best_outcome_label}* ({best_prob}%)\n"
             f" _Веса: {w_str}_"
         )
 
@@ -449,7 +472,7 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
         math_section = "\n\n".join(math_parts)
 
     report = f"""
-🏆 *CHIMERA AI v4.2 — АНАЛИЗ МАТЧА*
+🏆 *CHIMERA AI v4.3 — АНАЛИЗ МАТЧА*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ⚽ *{home_team} vs {away_team}*
@@ -485,6 +508,7 @@ _{llama_summary}_
 {(chr(10) + value_block) if value_block else ""}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 {agreement_text}
+{(chr(10) + conflict_warning) if conflict_warning else ""}
 *{signal_icon}*
 _{signal_reason}_
 
