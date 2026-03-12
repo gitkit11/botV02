@@ -749,8 +749,8 @@ _{best_bet}_
 # --- 8. Хендлеры Telegram ---
 dp = Dispatcher()
 
-from cs2_math_model import calculate_map_winrate_prob, format_cs2_math_report, MOCK_TEAMS_STATS
-from cs2_agents import run_cs2_analyst_agent, build_cs2_ensemble
+from cs2_core import calculate_cs2_win_prob, get_golden_signal, format_cs2_full_report
+from cs2_agents import run_cs2_analyst_agent
 
 @dp.callback_query(lambda c: c.data.startswith('cs2_m_'))
 async def handle_cs2_match_analysis(call: types.CallbackQuery):
@@ -763,40 +763,30 @@ async def handle_cs2_match_analysis(call: types.CallbackQuery):
     home_team, away_team = mock_matches[match_idx]
     
     await call.message.edit_text(
-        f"⏳ *Запускаю глубокий анализ CS2...*\n\n"
+        f"⏳ *Запускаю уникальный анализ Chimera Core v4.4...*\n\n"
         f"🎮 {home_team} vs {away_team}\n\n"
-        f"🗺 Анализ Map Pool... 🔄\n"
+        f"🗺 Симуляция Veto (BO3)... 🔄\n"
+        f"📊 Расчет MIS (Map Impact Score)... 🔄\n"
         f"🧠 GPT-4o (Стратег)... 🔄\n"
         f"🤖 Llama 3.3 (Тактик)... 🔄",
         parse_mode="Markdown"
     )
     
-    # 1. Математика
-    h_stats = MOCK_TEAMS_STATS.get(home_team, {"elo": 1500})
-    a_stats = MOCK_TEAMS_STATS.get(away_team, {"elo": 1500})
-    prob_h, prob_a = calculate_map_winrate_prob(h_stats, a_stats)
-    math_report = format_cs2_math_report(home_team, away_team, prob_h, prob_a)
+    # 1. Ядро (MIS + Veto)
+    analysis = calculate_cs2_win_prob(home_team, away_team)
+    analysis["home_team"] = home_team
+    analysis["away_team"] = away_team
     
     # 2. AI Агенты (Mock)
-    gpt_analysis = run_cs2_analyst_agent(home_team, away_team, h_stats, {}, "gpt-4o")
-    llama_analysis = run_cs2_analyst_agent(home_team, away_team, h_stats, {}, "llama-3.3")
+    gpt_analysis = run_cs2_analyst_agent(home_team, away_team, {}, {}, "gpt-4o")
+    llama_analysis = run_cs2_analyst_agent(home_team, away_team, {}, {}, "llama-3.3")
     
-    # 3. Ансамбль
-    final_h, final_a = build_cs2_ensemble((prob_h, prob_a), [(0.6, 0.4), (0.55, 0.45)])
+    # 3. Золотые сигналы (Mock коэффициенты)
+    mock_odds = {"home_win": 1.95, "away_win": 1.85}
+    golden_signals = get_golden_signal(analysis, mock_odds)
     
-    final_report = (
-        f"🎮 *CHIMERA AI CS2 — АНАЛИЗ МАТЧА*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⚔️ *{home_team} vs {away_team}*\n\n"
-        f"{math_report}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{gpt_analysis}\n\n"
-        f"{llama_analysis}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏆 *ИТОГОВЫЙ ВЕРДИКТ АНСАМБЛЯ:*\n"
-        f"🔥 Победа {home_team if final_h > final_a else away_team}\n"
-        f"📈 Вероятность: {int(max(final_h, final_a)*100)}%\n"
-    )
+    # 4. Финальный отчет
+    final_report = format_cs2_full_report(home_team, away_team, analysis, gpt_analysis, llama_analysis, golden_signals)
     
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ К списку матчей", callback_data="back_to_cs2")
