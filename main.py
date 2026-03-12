@@ -251,10 +251,25 @@ def build_main_keyboard():
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def build_matches_keyboard(matches):
-    """Строит клавиатуру со списком матчей."""
+    """Строит клавиатуру со списком матчей с датой и временем."""
+    from datetime import datetime, timezone, timedelta
     builder = InlineKeyboardBuilder()
     for i, match in enumerate(matches):
-        builder.button(text=f"⚽ {match['home_team']} vs {match['away_team']}", callback_data=f"m_{i}")
+        # Форматируем дату
+        time_str = ""
+        ct = match.get('commence_time', '')
+        if ct:
+            try:
+                dt = datetime.fromisoformat(ct.replace('Z', '+00:00'))
+                moscow_tz = timezone(timedelta(hours=3))
+                dt_m = dt.astimezone(moscow_tz)
+                time_str = f" [{dt_m.strftime('%d.%m %H:%M')}]"
+            except Exception:
+                pass
+        builder.button(
+            text=f"⚽ {match['home_team']} vs {match['away_team']}{time_str}",
+            callback_data=f"m_{i}"
+        )
     builder.button(text="🔄 Обновить список", callback_data="refresh_matches")
     builder.adjust(1)
     return builder.as_markup()
@@ -281,7 +296,8 @@ def build_back_to_markets_keyboard(match_index):
 
 def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_result, llama_result,
                        mixtral_result=None, poisson_probs=None, elo_probs=None, ensemble_probs=None,
-                       home_xg_stats=None, away_xg_stats=None, value_bets=None, injuries_block=None):
+                       home_xg_stats=None, away_xg_stats=None, value_bets=None, injuries_block=None,
+                       match_time=None):
     """Форматирует главный отчёт анализа матча с полным математическим анализом."""
 
     home_prob = prophet_data[1] * 100
@@ -476,11 +492,25 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     if math_parts:
         math_section = "\n\n".join(math_parts)
 
+    # Форматируем дату матча
+    match_time_str = ""
+    if match_time:
+        try:
+            from datetime import datetime, timezone, timedelta
+            dt = datetime.fromisoformat(match_time.replace('Z', '+00:00'))
+            # Переводим в Московское время (UTC+3)
+            moscow_tz = timezone(timedelta(hours=3))
+            dt_moscow = dt.astimezone(moscow_tz)
+            match_time_str = dt_moscow.strftime('%d.%m.%Y %H:%M МСК')
+        except Exception:
+            match_time_str = str(match_time)[:16]
+
     report = f"""
 🏆 *CHIMERA AI v4.3 — АНАЛИЗ МАТЧА*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ⚽ *{home_team} vs {away_team}*
+{(f'📅 *{match_time_str}*') if match_time_str else ''}
 
 📊 *ПРОРОК (нейросеть):*
  П1: {home_prob:.0f}% | Х: {draw_prob:.0f}% | П2: {away_prob:.0f}%
@@ -805,6 +835,7 @@ async def handle_callback(call: types.CallbackQuery):
                 away_xg_stats=cached.get("away_xg_stats"),
                 value_bets=cached.get("value_bets"),
                 injuries_block=cached.get("injuries_block"),
+                match_time=match.get('commence_time', ''),
             )
             await call.message.edit_text(report, parse_mode="Markdown", reply_markup=build_markets_keyboard(match_index))
 
@@ -1056,6 +1087,7 @@ async def handle_callback(call: types.CallbackQuery):
             away_xg_stats=away_xg_stats,
             value_bets=value_bets,
             injuries_block=injuries_block,
+            match_time=match.get('commence_time', ''),
         )
 
         await call.message.edit_text(
