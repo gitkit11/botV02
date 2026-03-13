@@ -30,28 +30,36 @@ except Exception as e:
     print(f"[КРИТИЧЕСКАЯ ОШИБКА] Не удалось инициализировать Groq клиент: {e}")
 
 # --- 2. Функция-помощник для вызова ИИ ---
-def call_ai(prompt, client_instance, model):
+def call_ai(prompt, client_instance, model, retries=2):
     """Отправляет промпт в указанную модель и возвращает ответ в формате JSON."""
     if not client_instance:
         print(f"[ОШИБКА] Клиент для модели {model} не инициализирован!")
         return {"error": f"Клиент для {model} не инициализирован."}
-    try:
-        print(f"[{model}] Отправляю запрос...")
-        response = client_instance.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "Ты — эксперт мирового класса по ставкам на футбол. Отвечай ТОЛЬКО валидным JSON объектом. Все текстовые поля пиши на русском языке. Будь конкретным и аналитичным."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3
-        )
-        result = json.loads(response.choices[0].message.content)
-        print(f"[{model}] Ответ получен: {str(result)[:100]}...")
-        return result
-    except Exception as e:
-        print(f"[{model} ОШИБКА] {type(e).__name__}: {e}")
-        return {"error": str(e)}
+    for attempt in range(retries):
+        try:
+            print(f"[{model}] Отправляю запрос (попытка {attempt+1})...")
+            response = client_instance.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "Ты — эксперт мирового класса по ставкам на футбол. Отвечай ТОЛЬКО валидным JSON объектом. Все текстовые поля пиши на русском языке. Будь конкретным и аналитичным."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                timeout=30
+            )
+            result = json.loads(response.choices[0].message.content)
+            print(f"[{model}] Ответ получен: {str(result)[:100]}...")
+            return result
+        except Exception as e:
+            print(f"[{model} ОШИБКА попытка {attempt+1}] {type(e).__name__}: {e}")
+            if attempt < retries - 1:
+                import time; time.sleep(2)
+    # Если Llama/Groq упал — возвращаем заглушку с пометкой
+    print(f"[{model}] Все попытки исчерпаны, возвращаю заглушку")
+    return {"error": f"{model} недоступен", "analysis_summary": f"⚠️ {model} временно недоступен",
+            "recommended_outcome": "Нет данных", "final_confidence_percent": 0,
+            "total_goals_prediction": "—", "both_teams_to_score_prediction": "—"}
 
 # --- 3. Специализированные ИИ-агенты (основной анализ) ---
 
@@ -81,7 +89,7 @@ def run_statistician_agent(prophet_data, team_stats_text=None):
       "match_balance": "равный" или "лёгкое преимущество хозяев" или "явный фаворит хозяева" или "лёгкое преимущество гостей" или "явный фаворит гости"
     }}
     """
-    return call_ai(prompt, client, "gpt-4o-mini")
+    return call_ai(prompt, client, "gpt-4.1-mini")
 
 def run_scout_agent(home_team, away_team, news_summary):
     """Агент-Разведчик: анализирует новости и настроения."""
@@ -105,7 +113,7 @@ def run_scout_agent(home_team, away_team, news_summary):
       "key_factor": "Самый важный фактор влияющий на матч (1 предложение)"
     }}
     """
-    return call_ai(prompt, client, "gpt-4o-mini")
+    return call_ai(prompt, client, "gpt-4.1-mini")
 
 def run_arbitrator_agent(stats_result, scout_result, bookmaker_odds):
     """Агент-Арбитр: объединяет все данные и выносит вердикт."""
@@ -144,7 +152,7 @@ def run_arbitrator_agent(stats_result, scout_result, bookmaker_odds):
       "signal_reason": "Почему ставить или пропустить (1 предложение)"
     }}
     """
-    return call_ai(prompt, client, "gpt-4o")
+    return call_ai(prompt, client, "gpt-4.1-mini")
 
 # --- 4. Llama Агент (независимое мнение) ---
 
@@ -203,7 +211,7 @@ def run_llama_via_gpt(home_team, away_team, prophet_data, news_summary, bookmake
       "final_confidence_percent": 50, "total_goals_prediction": "...", "total_goals_reasoning": "...",
       "both_teams_to_score_prediction": "...", "btts_reasoning": "..."}}
     """
-    return call_ai(prompt, client, "gpt-4o-mini")
+    return call_ai(prompt, client, "gpt-4.1-mini")
 
 # --- 5. Агенты для конкретных рынков ---
 
@@ -247,7 +255,7 @@ def run_goals_market_agent(home_team, away_team, prophet_data, news_summary, boo
       "best_goals_bet": "Лучшая ставка на голы с обоснованием (1 предложение)"
     }}
     """
-    return call_ai(prompt, client, "gpt-4o")
+    return call_ai(prompt, client, "gpt-4.1-mini")
 
 def run_corners_market_agent(home_team, away_team, prophet_data, news_summary, bookmaker_odds):
     """Анализ рынка угловых ударов."""
@@ -279,7 +287,7 @@ def run_corners_market_agent(home_team, away_team, prophet_data, news_summary, b
       "best_corners_bet": "Лучшая ставка на угловые (1 предложение)"
     }}
     """
-    return call_ai(prompt, groq_client if groq_client else client, "llama-3.3-70b-versatile" if groq_client else "gpt-4o-mini")
+    return call_ai(prompt, groq_client if groq_client else client, "llama-3.3-70b-versatile" if groq_client else "gpt-4.1-mini")
 
 def run_cards_market_agent(home_team, away_team, prophet_data, news_summary, bookmaker_odds):
     """Анализ рынка карточек."""
@@ -310,7 +318,7 @@ def run_cards_market_agent(home_team, away_team, prophet_data, news_summary, boo
       "best_cards_bet": "Лучшая ставка на карточки (1 предложение)"
     }}
     """
-    return call_ai(prompt, groq_client if groq_client else client, "llama-3.3-70b-versatile" if groq_client else "gpt-4o-mini")
+    return call_ai(prompt, groq_client if groq_client else client, "llama-3.3-70b-versatile" if groq_client else "gpt-4.1-mini")
 
 def run_handicap_market_agent(home_team, away_team, prophet_data, bookmaker_odds, gpt_result, llama_result):
     """Анализ рынка гандикапов."""
@@ -346,7 +354,7 @@ def run_handicap_market_agent(home_team, away_team, prophet_data, bookmaker_odds
       "best_handicap_bet": "Лучшая ставка на гандикап (1 предложение)"
     }}
     """
-    return call_ai(prompt, client, "gpt-4o-mini")
+    return call_ai(prompt, client, "gpt-4.1-mini")
 
 
 # ─── MIXTRAL АГЕНТ (3-й независимый агент) ──────────────────────────────────
