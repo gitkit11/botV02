@@ -274,6 +274,12 @@ def conf_icon(c):
 
 def build_cs2_matches_keyboard():
     """Клавиатура для выбора реальных матчей CS2 (Tier-1/2/3)."""
+    # Изолированный импорт внутри функции (Lazy Loading)
+    try:
+        from cs2_pandascore import get_combined_cs2_matches
+    except ImportError:
+        return InlineKeyboardBuilder().button(text="Ошибка загрузки CS2", callback_data="back_to_main").as_markup()
+
     global cs2_matches_cache
     builder = InlineKeyboardBuilder()
     
@@ -760,15 +766,19 @@ _{best_bet}_
 # --- 8. Хендлеры Telegram ---
 dp = Dispatcher()
 
-from cs2_core import calculate_cs2_win_prob, get_golden_signal, format_cs2_full_report
-from cs2_agents import run_cs2_analyst_agent
-from cs2_pandascore import get_combined_cs2_matches
-
 # Кэш для реальных матчей CS2
 cs2_matches_cache = []
 
 @dp.callback_query(lambda c: c.data.startswith('cs2_m_'))
 async def handle_cs2_match_analysis(call: types.CallbackQuery):
+    # Изолированный импорт внутри функции (Lazy Loading)
+    try:
+        from cs2_core import calculate_cs2_win_prob, get_golden_signal, format_cs2_full_report
+        from cs2_agents import run_cs2_analyst_agent
+    except ImportError as e:
+        await call.answer(f"Ошибка загрузки модуля CS2: {e}", show_alert=True)
+        return
+
     match_idx = int(call.data.split('_')[2])
     
     if not cs2_matches_cache or match_idx >= len(cs2_matches_cache):
@@ -781,7 +791,7 @@ async def handle_cs2_match_analysis(call: types.CallbackQuery):
     real_odds = match_data["odds"]
     
     await call.message.edit_text(
-        f"⏳ *Запускаю уникальный анализ Chimera Core v4.4...*\n\n"
+        f"⏳ *Запускаю уникальный анализ Chimera Core v4.5.1...*\n\n"
         f"🎮 {home_team} vs {away_team}\n\n"
         f"🗺 Симуляция Veto (BO3)... 🔄\n"
         f"📊 Расчет MIS (Map Impact Score)... 🔄\n"
