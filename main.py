@@ -388,25 +388,43 @@ async def analyze_cs2(call: types.CallbackQuery):
                                  "🔫 Симуляция Veto карт...\n"
                                  "🧠 AI-Агенты анализируют ростеры...", parse_mode="Markdown")
     
-    # Загрузка модулей CS2
     try:
-        from cs2_core import analyze_cs2_match
+        from cs2_core import calculate_cs2_win_prob, get_golden_signal, format_cs2_full_report
         from cs2_pandascore import get_combined_cs2_matches
+        from cs2_agents import run_cs2_gpt_agent, run_cs2_llama_agent
         
         if call.data == "cs2_demo":
-            match_data = {"home": "NaVi", "away": "Vitality", "league": "BLAST World Final"}
+            match_data = {"home": "NaVi", "away": "Vitality", "league": "BLAST World Final", "odds": {"home_win": 1.85, "away_win": 1.95}}
         else:
             idx = int(call.data.replace("cs2_m_", ""))
             matches = get_combined_cs2_matches()
             match_data = matches[idx]
         
-        report = await analyze_cs2_match(match_data['home'], match_data['away'], match_data.get('league', 'Pro League'))
+        home, away = match_data['home'], match_data['away']
+        league = match_data.get('league', 'Tier-2/3')
+        
+        # 1. Математика (Veto + MIS)
+        analysis = calculate_cs2_win_prob(home, away)
+        analysis["home_team"] = home
+        analysis["away_team"] = away
+        
+        # 2. AI Агенты
+        gpt_task = asyncio.create_task(run_cs2_gpt_agent(home, away, league))
+        llama_task = asyncio.create_task(run_cs2_llama_agent(home, away, league))
+        gpt_res, llama_res = await asyncio.gather(gpt_task, llama_task)
+        
+        # 3. Золотые сигналы
+        signals = get_golden_signal(analysis, match_data.get('odds', {}))
+        
+        # 4. Форматирование
+        report = format_cs2_full_report(home, away, analysis, gpt_res, llama_res, signals)
         
         builder = InlineKeyboardBuilder()
         builder.button(text="⬅️ Назад к списку", callback_data="cs2_back")
         await call.message.edit_text(report, parse_mode="Markdown", reply_markup=builder.as_markup())
     except Exception as e:
-        await call.message.edit_text(f"❌ Ошибка анализа: {str(e)}", reply_markup=InlineKeyboardBuilder().button(text="⬅️ Назад", callback_data="cs2_back").as_markup())
+        logging.error(f"CS2 Analysis Error: {e}")
+        await call.message.edit_text(f"❌ Ошибка анализа: {str(e)}\nПопробуйте позже.", reply_markup=InlineKeyboardBuilder().button(text="⬅️ Назад", callback_data="cs2_back").as_markup())
 
 @dp.callback_query(lambda c: c.data == "cs2_back")
 async def cs2_back(call: types.CallbackQuery):
