@@ -273,19 +273,29 @@ def conf_icon(c):
 # --- 6. Клавиатуры ---
 
 def build_cs2_matches_keyboard():
-    """Клавиатура для выбора матчей CS2 (Mock-данные)."""
+    """Клавиатура для выбора реальных матчей CS2."""
+    global cs2_matches_cache
     builder = InlineKeyboardBuilder()
-    # В будущем здесь будет парсинг через The Odds API (esports_csgo)
-    mock_matches = [
-        {"home": "Natus Vincere", "away": "Team Vitality", "time": "20:00"},
-        {"home": "FaZe Clan", "away": "G2 Esports", "time": "22:30"},
-        {"home": "Team Spirit", "away": "MOUZ", "time": "18:00"}
-    ]
-    for i, m in enumerate(mock_matches):
+    
+    # Получаем реальные матчи через парсер
+    cs2_matches_cache = get_real_cs2_matches()
+    
+    if not cs2_matches_cache:
+        # Если API не вернуло данных (нет ключа или нет матчей), оставляем mock для теста
+        cs2_matches_cache = [
+            {"home": "Natus Vincere", "away": "Team Vitality", "time": "20:00", "odds": {"home_win": 1.95, "away_win": 1.85}},
+            {"home": "FaZe Clan", "away": "G2 Esports", "time": "22:30", "odds": {"home_win": 2.10, "away_win": 1.70}},
+            {"home": "Team Spirit", "away": "MOUZ", "time": "18:00", "odds": {"home_win": 1.65, "away_win": 2.20}}
+        ]
+        print("[CS2] API не вернуло данных, использую тестовые пары.")
+
+    for i, m in enumerate(cs2_matches_cache):
         builder.button(
             text=f"🎮 {m['home']} vs {m['away']} [{m['time']}]",
             callback_data=f"cs2_m_{i}"
         )
+    
+    builder.button(text="🔄 Обновить список", callback_data="back_to_cs2")
     builder.button(text="⬅️ Назад", callback_data="back_to_main")
     builder.adjust(1)
     return builder.as_markup()
@@ -751,16 +761,23 @@ dp = Dispatcher()
 
 from cs2_core import calculate_cs2_win_prob, get_golden_signal, format_cs2_full_report
 from cs2_agents import run_cs2_analyst_agent
+from cs2_parser import get_real_cs2_matches
+
+# Кэш для реальных матчей CS2
+cs2_matches_cache = []
 
 @dp.callback_query(lambda c: c.data.startswith('cs2_m_'))
 async def handle_cs2_match_analysis(call: types.CallbackQuery):
     match_idx = int(call.data.split('_')[2])
-    mock_matches = [
-        ("Natus Vincere", "Team Vitality"),
-        ("FaZe Clan", "G2 Esports"),
-        ("Team Spirit", "MOUZ")
-    ]
-    home_team, away_team = mock_matches[match_idx]
+    
+    if not cs2_matches_cache or match_idx >= len(cs2_matches_cache):
+        await call.answer("Ошибка данных. Пожалуйста, обновите список матчей.", show_alert=True)
+        return
+
+    match_data = cs2_matches_cache[match_idx]
+    home_team = match_data["home"]
+    away_team = match_data["away"]
+    real_odds = match_data["odds"]
     
     await call.message.edit_text(
         f"⏳ *Запускаю уникальный анализ Chimera Core v4.4...*\n\n"
@@ -777,13 +794,12 @@ async def handle_cs2_match_analysis(call: types.CallbackQuery):
     analysis["home_team"] = home_team
     analysis["away_team"] = away_team
     
-    # 2. AI Агенты (Mock)
+    # 2. AI Агенты (Mock/Real)
     gpt_analysis = run_cs2_analyst_agent(home_team, away_team, {}, {}, "gpt-4o")
     llama_analysis = run_cs2_analyst_agent(home_team, away_team, {}, {}, "llama-3.3")
     
-    # 3. Золотые сигналы (Mock коэффициенты)
-    mock_odds = {"home_win": 1.95, "away_win": 1.85}
-    golden_signals = get_golden_signal(analysis, mock_odds)
+    # 3. Золотые сигналы (Используем РЕАЛЬНЫЕ коэффициенты из API)
+    golden_signals = get_golden_signal(analysis, real_odds)
     
     # 4. Финальный отчет
     final_report = format_cs2_full_report(home_team, away_team, analysis, gpt_analysis, llama_analysis, golden_signals)
