@@ -21,6 +21,10 @@ from agents import (
     run_corners_market_agent, run_cards_market_agent, run_handicap_market_agent,
     run_mixtral_agent, build_math_ensemble, calculate_value_bets
 )
+from signal_engine import (
+    check_football_signal, check_cs2_signal,
+    format_signal, format_signals_list
+)
 from math_model import (
     load_elo_ratings, save_elo_ratings, update_elo, elo_win_probabilities,
     load_team_form, get_form_string, get_form_bonus,
@@ -1588,6 +1592,89 @@ async def auto_refresh_matches_task():
             print(f"[Авто] Список матчей обновлён: {league_name} — {len(matches)} матчей")
         except Exception as e:
             print(f"[Авто] Ошибка обновления матчей: {e}")
+
+# --- 10b. Команда /signals ---
+@dp.message(Command("signals"))
+async def cmd_signals(message: types.Message):
+    """Команда /signals — только матчи с реальным сигналом."""
+    await message.answer("⏳ Ищу сигналы по всем матчам дня...", parse_mode="Markdown")
+    all_signals = []
+
+    # --- Футбол ---
+    try:
+        matches = get_matches()
+        for m in matches[:20]:
+            try:
+                home = m.get("home_team", "")
+                away = m.get("away_team", "")
+                if not home or not away:
+                    continue
+                odds = get_bookmaker_odds(m)
+                if not odds.get("home_win"):
+                    continue
+                elo_h = _elo_ratings.get(home, 1500)
+                elo_a = _elo_ratings.get(away, 1500)
+                form_h = get_form_string(_team_form, home)
+                form_a = get_form_string(_team_form, away)
+                elo_probs = elo_win_probabilities(elo_h, elo_a)
+                sigs = check_football_signal(
+                    home_team=home, away_team=away,
+                    home_prob=elo_probs["home"],
+                    away_prob=elo_probs["away"],
+                    draw_prob=elo_probs["draw"],
+                    bookmaker_odds=odds,
+                    home_form=form_h, away_form=form_a,
+                    elo_home=elo_h, elo_away=elo_a,
+                )
+                all_signals.extend(sigs)
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[Signals] Футбол ошибка: {e}")
+
+    # --- CS2 ---
+    try:
+        from sports.cs2 import calculate_cs2_win_prob
+        from sports.cs2.hltv_stats import get_player_stats
+        for m in cs2_matches_cache[:15]:
+            try:
+                home = m.get("home", "")
+                away = m.get("away", "")
+                odds = m.get("odds", {})
+                if not home or not away or not odds:
+                    continue
+                analysis = calculate_cs2_win_prob(home, away)
+                h_stats = analysis.get("home_stats", {})
+                a_stats = analysis.get("away_stats", {})
+                detail = analysis.get("detail", {})
+                mis_h = detail.get("mis", 0.5)
+                h_players = get_player_stats(home)
+                a_players = get_player_stats(away)
+                h_ratings = [p.get("rating") for p in h_players if p.get("rating")]
+                a_ratings = [p.get("rating") for p in a_players if p.get("rating")]
+                h_avg = sum(h_ratings) / len(h_ratings) if h_ratings else 0
+                a_avg = sum(a_ratings) / len(a_ratings) if a_ratings else 0
+                sigs = check_cs2_signal(
+                    home_team=home, away_team=away,
+                    home_prob=analysis.get("home_prob", 0),
+                    away_prob=analysis.get("away_prob", 0),
+                    bookmaker_odds=odds,
+                    home_form=h_stats.get("form", ""),
+                    away_form=a_stats.get("form", ""),
+                    elo_home=analysis.get("elo_home", 0),
+                    elo_away=analysis.get("elo_away", 0),
+                    mis_home=mis_h, mis_away=1 - mis_h,
+                    home_avg_rating=h_avg, away_avg_rating=a_avg,
+                )
+                all_signals.extend(sigs)
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[Signals] CS2 ошибка: {e}")
+
+    all_signals.sort(key=lambda x: x["ev"], reverse=True)
+    text = format_signals_list(all_signals)
+    await message.answer(text, parse_mode="Markdown")
 
 # --- 11. Запуск бота ---
 async def main():
