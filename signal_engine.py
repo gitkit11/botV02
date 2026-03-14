@@ -327,3 +327,26 @@ def check_cs2_signal(
             })
 
     return signals
+
+def format_signal(sig: dict) -> str:
+    """Форматирует сигнал в красивый текст для Telegram."""
+    emoji = "⚽️ ФУТБОЛ" if sig['sport'] == "football" else "🎮 CS2"
+    
+    text = [
+        f"<b>{emoji} | {sig['strength']}</b>",
+        f"🏆 {sig['home']} vs {sig['away']}",
+        f"🎯 Прогноз: <b>{sig['team']} ({sig['outcome']})</b>",
+        "",
+        f"📊 Вероятность: {sig['prob']}%",
+        f"📈 Коэффициент: {sig['odds']}",
+        f"💰 Ценность (EV): +{sig['ev']}%",
+        f"⚖️ Рекомендуемая ставка: {sig['kelly']}%",
+        "",
+        f"📝 <b>Анализ ({sig['score']}/{sig['max_score']} баллов):</b>"
+    ]
+    
+    for check in sig['checks']:
+        text.append(f"• {check}")
+        
+    text.append("\n#ChimeraAI #Прогноз")
+    return "\n".join(text)
