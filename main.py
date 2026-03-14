@@ -181,6 +181,18 @@ FOOTBALL_LEAGUES = [
     ("soccer_turkey_super_league",     "🇹🇷 Суперлига"),
 ]
 
+# Белый список лиг для CS2
+CS2_WHITELIST_LEAGUES = [
+    "ESL Pro League",
+    "CCT",
+    "BLAST",
+    "Game Masters",
+    "Roman Imperium Cup",
+    "Dust2.dk Ligaen",
+    "Exort Series",
+    "NODWIN Clutch Series"
+]
+
 # Текущая выбранная лига
 _current_league = "soccer_epl"
 _last_matches_refresh = 0  # timestamp последнего обновления
@@ -784,7 +796,24 @@ async def handle_text(message: types.Message):
         await message.answer("⏳ Загружаю матчи CS2...")
         try:
             from sports.cs2 import get_combined_cs2_matches
-            cs2_matches = get_combined_cs2_matches()
+            all_cs2_matches = get_combined_cs2_matches()
+            
+            # Фильтрация по белому списку лиг
+            cs2_matches = []
+            for m in all_cs2_matches:
+                league_name = m.get('league', '')
+                tournament_name = m.get('tournament', '')
+                full_name = f"{league_name} {tournament_name}".lower()
+                
+                is_allowed = False
+                for allowed in CS2_WHITELIST_LEAGUES:
+                    if allowed.lower() in full_name:
+                        is_allowed = True
+                        break
+                
+                if is_allowed:
+                    cs2_matches.append(m)
+
             if not cs2_matches:
                 await message.answer(
                     "🎮 *Киберспорт CS2*\n\n"
