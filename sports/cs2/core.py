@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from .veto_logic import simulate_bo3_veto, get_map_impact_score
 from .pandascore import get_team_stats, get_head_to_head
-from .hltv_odds import get_hltv_odds, get_team_map_stats_async
+from .hltv_odds import get_hltv_odds, get_team_map_stats
 import json
 import asyncio
 
@@ -34,7 +34,7 @@ def get_elo_prob(home_team, away_team):
     h_prob = 1 / (1 + 10 ** ((a_elo - h_elo) / 400))
     return round(h_prob, 3), round(1 - h_prob, 3)
 
-async def calculate_cs2_win_prob(home_team, away_team):
+def calculate_cs2_win_prob(home_team, away_team):
     """
     Расчёт вероятности победы — 3 источника данных:
     1. MIS (Map Impact Score) из вето-симуляции — 40%
@@ -42,8 +42,8 @@ async def calculate_cs2_win_prob(home_team, away_team):
     3. Реальный винрейт из PandaScore (последние 20 матчей) — 25%
     """
     # Получаем статистику карт с HLTV
-    home_map_stats = await get_team_map_stats_async(home_team)
-    away_map_stats = await get_team_map_stats_async(away_team)
+    home_map_stats = get_team_map_stats(home_team)
+    away_map_stats = get_team_map_stats(away_team)
     
     team_map_stats_combined = {
         home_team: home_map_stats,

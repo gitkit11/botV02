@@ -937,7 +937,7 @@ async def handle_callback(call: types.CallbackQuery):
         await call.message.edit_text(f"⏳ Анализирую *{home_team} vs {away_team}*...", parse_mode="Markdown")
         try:
             from sports.cs2 import calculate_cs2_win_prob, get_golden_signal, format_cs2_full_report, run_cs2_analyst_agent
-            analysis = await calculate_cs2_win_prob(home_team, away_team)
+            analysis = calculate_cs2_win_prob(home_team, away_team)
             analysis["home_team"] = home_team
             analysis["away_team"] = away_team
             odds = m.get("odds", {"home_win": 1.90, "away_win": 1.90})

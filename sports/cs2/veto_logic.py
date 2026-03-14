@@ -68,11 +68,16 @@ def simulate_bo3_veto(home_team, away_team):
     
     return [h_pick, a_pick, decider], veto_log
 
-def get_map_impact_score(team_name, map_name):
+def get_map_impact_score(team_name, map_name, team_map_stats):
     """
-    Рассчитывает MIS (Map Impact Score) для конкретной команды на карте.
-    В будущем: парсинг реальных данных HLTV (WinRate, Rounds Won/Lost).
+    Рассчитывает MIS (Map Impact Score) для конкретной команды на карте,
+    используя реальные данные HLTV (WinRate).
     """
+    # Если есть реальные данные, используем их
+    if team_name in team_map_stats and map_name in team_map_stats[team_name]:
+        # HLTV возвращает процент, делим на 100 для получения доли
+        return team_map_stats[team_name][map_name] / 100.0
+    
+    # Если нет данных, используем mock-данные (предпочтения)
     pref = TEAM_MAP_PREFERENCES.get(team_name, {}).get(map_name, 0.5)
-    # Имитация "силы" команды на карте (0-100)
-    return int(pref * 100)
+    return pref
