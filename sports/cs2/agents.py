@@ -77,6 +77,11 @@ def _call_ai(prompt, client, model, system_msg=None, retries=2):
                 time.sleep(1)
         except Exception as e:
             err = str(e)[:120]
+            # Если ошибка 403 (Access Denied) или другие критические ошибки Groq
+            if "403" in err or "access denied" in err.lower():
+                print(f"[AI] Критическая ошибка {model}: {err}. Требуется fallback.")
+                raise e # Пробрасываем выше для обработки в run_cs2_analyst_agent
+            
             if attempt < retries - 1 and ("rate" in err.lower() or "timeout" in err.lower()):
                 time.sleep(3)
             else:
@@ -156,7 +161,15 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
         client = _groq_client
         model = "llama-3.3-70b-versatile"
 
-    result = _call_ai(prompt, client, model)
+    try:
+        result = _call_ai(prompt, client, model)
+    except Exception as e:
+        if agent_type == "llama-3.3":
+            print(f"[Llama Fallback] Ошибка Llama (403/Access Denied), использую GPT-4o-mini")
+            result = _call_ai(prompt, _gpt_client, "gpt-4.1-mini")
+        else:
+            result = f"❌ Ошибка {model}: {e}"
+            
     return result
 
 

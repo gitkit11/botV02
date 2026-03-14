@@ -64,17 +64,24 @@ def get_team_id(team_name):
     """Ищет ID команды по имени. Кэширует результат."""
     if team_name in _team_cache:
         return _team_cache[team_name]
-    r = _request_with_retry(f"{PANDASCORE_BASE}/teams",
-                             params={"search[name]": team_name, "per_page": 5})
+    
+    # 1. Поиск по точному имени (filter[name])
+    r = _request_with_retry(f"{PANDASCORE_BASE}/teams", params={"filter[name]": team_name})
     if r and r.ok:
         teams = r.json()
         if teams:
-            # Ищем точное или близкое совпадение
+            _team_cache[team_name] = teams[0]["id"]
+            return teams[0]["id"]
+            
+    # 2. Поиск по частичному совпадению (search[name])
+    r = _request_with_retry(f"{PANDASCORE_BASE}/teams", params={"search[name]": team_name, "per_page": 5})
+    if r and r.ok:
+        teams = r.json()
+        if teams:
             for t in teams:
                 if team_name.lower() in t["name"].lower() or t["name"].lower() in team_name.lower():
                     _team_cache[team_name] = t["id"]
                     return t["id"]
-            # Берём первый результат если нет точного совпадения
             _team_cache[team_name] = teams[0]["id"]
             return teams[0]["id"]
     return None

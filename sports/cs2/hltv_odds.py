@@ -47,11 +47,11 @@ async def get_hltv_odds_async(team1: str, team2: str):
                 }}
             """)
             
-            # 3. Если не нашли на главной, пробуем поиск через Google/HLTV Search (заглушка для Tier-2/3)
+            # 3. Если не нашли на главной, пробуем поиск через DuckDuckGo (более стабильно чем Google без API)
             if not match_link:
-                # Попробуем найти через страницу результатов/расписания конкретной команды
-                search_query = f"{team1} vs {team2} hltv".replace(" ", "+")
-                await page.goto(f"https://www.google.com/search?q={search_query}", wait_until="domcontentloaded")
+                search_query = f"{team1} vs {team2} hltv matches".replace(" ", "+")
+                await page.goto(f"https://duckduckgo.com/?q={search_query}", wait_until="domcontentloaded")
+                await page.wait_for_timeout(2000)
                 match_link = await page.evaluate("""
                     () => {
                         const links = Array.from(document.querySelectorAll('a'));
@@ -99,6 +99,18 @@ async def get_hltv_odds_async(team1: str, team2: str):
                         if (externalOdds.length >= 2) {
                             result['team1'] = externalOdds[0].innerText.trim();
                             result['team2'] = externalOdds[1].innerText.trim();
+                        }
+                    }
+
+                    // Вариант 4: Блок сравнения коэффициентов (betting-listing)
+                    if (!result.team1) {
+                        const bettingListing = document.querySelector('.betting-listing');
+                        if (bettingListing) {
+                            const odds = bettingListing.querySelectorAll('.percentage');
+                            if (odds.length >= 2) {
+                                result['team1'] = odds[0].innerText.trim();
+                                result['team2'] = odds[1].innerText.trim();
+                            }
                         }
                     }
                     
