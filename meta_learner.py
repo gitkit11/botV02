@@ -3,10 +3,9 @@ from typing import Dict, List, Optional
 import json
 import os
 import re
+import logging
 
-# Загрузка конфигурации из signal_engine.py для анализа
-# В реальной ситуации лучше импортировать или иметь доступ к актуальным CFG
-# Для простоты примера, будем считать, что CFG доступны или передаются.
+logger = logging.getLogger(__name__)
 
 class MetaLearner:
     def __init__(self, db_path: str = 'chimera_predictions.db', signal_engine_path: str = 'signal_engine.py'):
@@ -15,149 +14,128 @@ class MetaLearner:
         self.current_cfgs = self._load_current_cfgs()
 
     def _load_current_cfgs(self) -> Dict:
-        """Загружает текущие FOOTBALL_CFG и CS2_CFG из signal_engine.py."""
         cfgs = {"FOOTBALL_CFG": {}, "CS2_CFG": {}}
         try:
+            if not os.path.exists(self.signal_engine_path):
+                return cfgs
             with open(self.signal_engine_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-
-            # Ищем FOOTBALL_CFG
-            football_cfg_match = re.search(r'FOOTBALL_CFG = (\{.*?\})', content, re.DOTALL)
-            if football_cfg_match:
-                # Безопасная оценка словаря
-                cfgs["FOOTBALL_CFG"] = eval(football_cfg_match.group(1))
-
-            # Ищем CS2_CFG
-            cs2_cfg_match = re.search(r'CS2_CFG = (\{.*?\})', content, re.DOTALL)
-            if cs2_cfg_match:
-                cfgs["CS2_CFG"] = eval(cs2_cfg_match.group(1))
-
+            for name in cfgs.keys():
+                match = re.search(f'{name} = \\{{(.*?)\\}}', content, re.DOTALL)
+                if match:
+                    cfg_str = "{" + re.sub(r'#.*', '', match.group(1)) + "}"
+                    cfgs[name] = eval(cfg_str)
         except Exception as e:
-            print(f"Ошибка при загрузке CFG из {self.signal_engine_path}: {e}")
+            logger.error(f"Ошибка при загрузке CFG: {e}")
         return cfgs
 
     def analyze_performance(self, sport: str) -> Dict:
-        """Анализирует производительность прогнозов для заданного вида спорта."""
+        if not os.path.exists(self.db_path):
+            return {"error": "Database not found"}
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         table_name = f"{sport}_predictions"
-
-        # Извлекаем все завершенные прогнозы
-        cursor.execute(f"SELECT * FROM {table_name} WHERE result IS NOT NULL")
-        predictions = cursor.fetchall()
-        
-        # Получаем названия колонок
-        col_names = [description[0] for description in cursor.description]
-        
-        conn.close()
-
-        if not predictions:
-            return {"roi": 0, "accuracy": 0, "total_predictions": 0, "details": {}}
-
-        total_invested = 0
-        total_profit = 0
-        correct_predictions = 0
-
-        # Детальный анализ по параметрам (пример: по EV)
-        ev_performance = {}
-
-        for pred_tuple in predictions:
-            pred = dict(zip(col_names, pred_tuple))
-            
-            if pred['kelly'] > 0: # Только если была ставка
-                invested = pred['kelly'] # Келли - это процент от банка, для простоты считаем как единицу
-                total_invested += invested
-
-                is_correct = (pred['outcome'] == pred['result'])
-                if is_correct:
-                    profit = invested * (pred['odds'] - 1) # Выигрыш
-                    correct_predictions += 1
-                else:
-                    profit = -invested # Проигрыш
-                total_profit += profit
-
-                # Анализ по EV-диапазонам
-                ev_bucket = int(pred['ev'] // 5) * 5 # Группируем по 5% EV
-                if ev_bucket not in ev_performance:
-                    ev_performance[ev_bucket] = {'invested': 0, 'profit': 0, 'count': 0, 'correct': 0}
-                ev_performance[ev_bucket]['invested'] += invested
-                ev_performance[ev_bucket]['profit'] += profit
-                ev_performance[ev_bucket]['count'] += 1
-                if is_correct: ev_performance[ev_bucket]['correct'] += 1
-
-        roi = (total_profit / total_invested) * 100 if total_invested > 0 else 0
-        accuracy = (correct_predictions / len(predictions)) * 100
-
-        # Преобразование ev_performance в более читаемый формат
-        for bucket, data in ev_performance.items():
-            data['roi'] = (data['profit'] / data['invested']) * 100 if data['invested'] > 0 else 0
-            data['accuracy'] = (data['correct'] / data['count']) * 100
-
-        return {
-            "roi": round(roi, 2),
-            "accuracy": round(accuracy, 2),
-            "total_predictions": len(predictions),
-            "ev_performance": ev_performance,
-            # Здесь можно добавить анализ по другим параметрам: elo_gap, form, map_advantage и т.д.
-        }
-
-    def suggest_config_updates(self, sport: str, performance_data: Dict) -> Dict:
-        """Предлагает обновления конфигурации на основе анализа производительности."""
-        suggested_updates = {}
-        current_cfg = self.current_cfgs.get(f"{sport.upper()}_CFG", {})
-
-        if not current_cfg: return {}
-
-        # Пример логики: корректировка min_ev на основе ROI по EV-диапазонам
-        ev_performance = performance_data.get('ev_performance', {})
-        best_ev_bucket = None
-        max_roi = -float('inf')
-
-        for bucket, data in ev_performance.items():
-            if data['count'] > 5 and data['roi'] > max_roi: # Учитываем только достаточное количество данных
-                max_roi = data['roi']
-                best_ev_bucket = bucket
-        
-        if best_ev_bucket is not None and best_ev_bucket / 100 > current_cfg.get('min_ev', 0):
-            # Если лучший ROI достигается при более высоком EV, предлагаем его
-            suggested_updates['min_ev'] = round(best_ev_bucket / 100, 2)
-
-        # Здесь можно добавить логику для других параметров (min_elo_gap, min_map_advantage и т.д.)
-        # Например, если сигналы с высоким ELO_GAP имеют плохой ROI, можно увеличить min_elo_gap
-
-        return suggested_updates
-
-    def apply_config_updates(self, sport: str, updates: Dict):
-        """Применяет предложенные обновления к signal_engine.py."""
-        if not updates: return
-
-        cfg_name = f"{sport.upper()}_CFG"
-        
-        # Создаем резервную копию
-        backup_path = self.signal_engine_path + ".bak"
-        os.replace(self.signal_engine_path, backup_path)
         
         try:
-            with open(backup_path, 'r', encoding='utf-8') as f_in:
-                content = f_in.read()
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            cols = [c[1] for c in cursor.fetchall()]
+            if not cols: return {"error": f"Table {table_name} not found"}
+
+            # Определяем колонку результата (result или real_outcome)
+            res_col = "real_outcome" if "real_outcome" in cols else "result"
             
-            updated_content = content
-            for key, value in updates.items():
-                # Ищем строку с параметром и обновляем его значение
-                # Пример: "min_ev":       0.07,
-                # Регулярное выражение для поиска и замены значения
-                pattern = r'("{}":\s*)([\d\.]+)(.*)'.format(re.escape(key))
-                replacement = r'\g<1>{}{}'.format(value, r'\g<3>')
-                updated_content = re.sub(pattern, replacement, updated_content, count=1)
+            cursor.execute(f"SELECT * FROM {table_name} WHERE {res_col} IS NOT NULL AND {res_col} != ''")
+            rows = cursor.fetchall()
+            
+            if not rows: return {"total": 0, "msg": "No completed matches found"}
 
-            with open(self.signal_engine_path, 'w', encoding='utf-8') as f_out:
-                f_out.write(updated_content)
-            print(f"Конфигурация {cfg_name} обновлена в {self.signal_engine_path}")
+            total_bets = 0
+            wins = 0
+            total_profit = 0
+            factor_analysis = {"ev_groups": {}}
 
+            for row in rows:
+                pred = dict(zip(cols, row))
+                outcome = pred.get('value_bet_outcome') or pred.get('outcome') or pred.get('recommended_outcome')
+                if not outcome: continue
+
+                is_win = (outcome == pred[res_col])
+                odds = float(pred.get('value_bet_odds') or pred.get('odds') or pred.get('bookmaker_odds_home') or 1.0)
+                kelly = float(pred.get('value_bet_kelly') or pred.get('kelly') or 1.0)
+                
+                total_bets += 1
+                if is_win:
+                    wins += 1
+                    total_profit += kelly * (odds - 1)
+                else:
+                    total_profit -= kelly
+
+                ev = float(pred.get('value_bet_ev') or pred.get('ev', 0))
+                ev_bucket = int(ev * 100 // 5) * 5
+                if ev_bucket not in factor_analysis["ev_groups"]:
+                    factor_analysis["ev_groups"][ev_bucket] = {"count": 0, "wins": 0, "profit": 0}
+                factor_analysis["ev_groups"][ev_bucket]["count"] += 1
+                if is_win: factor_analysis["ev_groups"][ev_bucket]["wins"] += 1
+                factor_analysis["ev_groups"][ev_bucket]["profit"] += (kelly * (odds - 1)) if is_win else -kelly
+
+            roi = (total_profit / total_bets * 100) if total_bets > 0 else 0
+            accuracy = (wins / total_bets * 100) if total_bets > 0 else 0
+
+            return {"sport": sport, "total": total_bets, "accuracy": round(accuracy, 2), "roi": round(roi, 2), "factors": factor_analysis}
         except Exception as e:
-            print(f"Ошибка при применении обновлений к {self.signal_engine_path}: {e}")
-            # Восстанавливаем из бэкапа в случае ошибки
-            os.replace(backup_path, self.signal_engine_path)
+            return {"error": str(e)}
         finally:
-            if os.path.exists(backup_path):
-                os.remove(backup_path) # Удаляем бэкап после успешного применения
+            conn.close()
+
+    def suggest_updates(self, sport: str, perf: Dict) -> Dict:
+        if "error" in perf or perf.get("total", 0) < 10: return {}
+        updates = {}
+        ev_groups = perf.get("factors", {}).get("ev_groups", {})
+        if perf["roi"] < 0:
+            sorted_ev = sorted(ev_groups.keys())
+            for ev_threshold in sorted_ev:
+                sub_profit = sum(ev_groups[e]["profit"] for e in sorted_ev if e >= ev_threshold)
+                sub_count = sum(ev_groups[e]["count"] for e in sorted_ev if e >= ev_threshold)
+                if sub_count > 5 and (sub_profit / sub_count) > 0:
+                    new_min_ev = ev_threshold / 100.0
+                    current_min_ev = self.current_cfgs.get(f"{sport.upper()}_CFG", {}).get("min_ev", 0)
+                    if new_min_ev > current_min_ev:
+                        updates["min_ev"] = new_min_ev
+                        break
+        return updates
+
+    def apply_updates(self, sport: str, updates: Dict):
+        if not updates: return
+        try:
+            with open(self.signal_engine_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            cfg_start = False
+            cfg_name = f"{sport.upper()}_CFG"
+            new_lines = []
+            for line in lines:
+                if cfg_name in line: cfg_start = True
+                if cfg_start:
+                    for key, val in updates.items():
+                        if f'"{key}"' in line:
+                            line = re.sub(r'("'+key+'":\s*)([\d\.]+)', r'\g<1>{}'.format(val), line)
+                            print(f"MetaLearner: {cfg_name}['{key}'] -> {val}")
+                if cfg_start and "}" in line: cfg_start = False
+                new_lines.append(line)
+            with open(self.signal_engine_path, 'w', encoding='utf-8') as f:
+                f.writelines(new_lines)
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении signal_engine.py: {e}")
+
+if __name__ == "__main__":
+    ml = MetaLearner()
+    for s in ['football', 'cs2']:
+        p = ml.analyze_performance(s)
+        if "error" not in p:
+            print(f"Анализ {s}: ROI={p.get('roi')}%, Accuracy={p.get('accuracy')}% ({p.get('total')} матчей)")
+            u = ml.suggest_updates(s, p)
+            if u:
+                print(f"Обновление {s}: {u}")
+                ml.apply_updates(s, u)
+        else:
+            print(f"Анализ {s}: {p['error']}")

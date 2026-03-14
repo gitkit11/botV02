@@ -1,8 +1,17 @@
 """
-HLTV Stats — Автоматически обновляемые данные
-Дата обновления: 2026-03-14
+HLTV Stats — Модуль для работы со статистикой HLTV.
+Поддерживает статический кэш и динамическое обновление.
 """
+import json
+import os
+import logging
 
+logger = logging.getLogger(__name__)
+
+# Путь к динамическому кэшу
+CACHE_FILE = "hltv_cache.json"
+
+# Статический кэш (Fallback)
 MAP_STATS: dict[str, dict[str, float]] = {
     "Team Vitality": {"Inferno": 77.8, "Dust2": 90.9, "Mirage": 67.4, "Nuke": 70.7, "Train": 68.2, "Overpass": 77.8, "Anubis": 75.0, "Ancient": 50.0},
     "G2 Esports": {"Inferno": 55.6, "Dust2": 60.0, "Mirage": 66.7, "Nuke": 50.0, "Overpass": 57.1, "Anubis": 62.5, "Ancient": 45.0},
@@ -12,11 +21,11 @@ MAP_STATS: dict[str, dict[str, float]] = {
 }
 
 PLAYER_STATS: dict[str, list[dict]] = {
-    "Team Vitality": [{"name": "ZywOo", "rating": 1.35}, {"name": "apEX", "rating": 1.05}, {"name": "ropz", "rating": 1.18}, {"name": "mezii", "rating": 1.08}, {"name": "flameZ", "rating": 1.12}],
-    "G2 Esports": [{"name": "m0NESY", "rating": 1.28}, {"name": "NiKo", "rating": 1.22}, {"name": "huNter-", "rating": 1.10}, {"name": "jks", "rating": 1.05}, {"name": "HooXi", "rating": 0.98}],
-    "FaZe Clan": [{"name": "karrigan", "rating": 0.97}, {"name": "rain", "rating": 1.08}, {"name": "broky", "rating": 1.15}, {"name": "frozen", "rating": 1.12}],
-    "Natus Vincere": [{"name": "iM", "rating": 1.05}, {"name": "w0nderful", "rating": 1.18}, {"name": "jL", "rating": 1.10}],
-    "Team Spirit": [{"name": "donk", "rating": 1.38}, {"name": "chopper", "rating": 1.02}, {"name": "zont1x", "rating": 1.15}],
+    "Team Vitality": [{"name": "ZywOo", "rating": 1.35}, {"name": "apEX", "rating": 1.05}, {"name": "flameZ", "rating": 1.12}, {"name": "mezii", "rating": 1.08}, {"name": "Spinx", "rating": 1.15}],
+    "G2 Esports": [{"name": "m0NESY", "rating": 1.28}, {"name": "NiKo", "rating": 1.22}, {"name": "huNter-", "rating": 1.10}, {"name": "MalbsMd", "rating": 1.15}, {"name": "Snax", "rating": 1.02}],
+    "FaZe Clan": [{"name": "karrigan", "rating": 0.97}, {"name": "rain", "rating": 1.08}, {"name": "broky", "rating": 1.15}, {"name": "frozen", "rating": 1.12}, {"name": "ropz", "rating": 1.14}],
+    "Natus Vincere": [{"name": "iM", "rating": 1.12}, {"name": "w0nderful", "rating": 1.18}, {"name": "jL", "rating": 1.15}, {"name": "b1t", "rating": 1.10}, {"name": "Aleksib", "rating": 1.02}],
+    "Team Spirit": [{"name": "donk", "rating": 1.38}, {"name": "chopper", "rating": 1.02}, {"name": "zont1x", "rating": 1.15}, {"name": "shalfey", "rating": 1.10}, {"name": "magixx", "rating": 1.05}],
 }
 
 TEAM_ALIASES: dict[str, str] = {
@@ -29,13 +38,45 @@ TEAM_ALIASES: dict[str, str] = {
     "Liquid": "Team Liquid",
 }
 
+def load_dynamic_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_dynamic_cache(data):
+    try:
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения кэша HLTV: {e}")
+
 def get_team_map_stats(team_name: str) -> dict:
     name = TEAM_ALIASES.get(team_name, team_name)
-    return MAP_STATS.get(name, {})
+    cache = load_dynamic_cache()
+    # Приоритет: Динамический кэш -> Статический кэш
+    return cache.get("maps", {}).get(name) or MAP_STATS.get(name, {})
 
 def get_player_stats(team_name: str) -> list:
     name = TEAM_ALIASES.get(team_name, team_name)
-    return PLAYER_STATS.get(name, [])
+    cache = load_dynamic_cache()
+    return cache.get("players", {}).get(name) or PLAYER_STATS.get(name, [])
+
+def update_team_stats(team_name: str, maps: dict = None, players: list = None):
+    """Обновляет динамический кэш для команды."""
+    name = TEAM_ALIASES.get(team_name, team_name)
+    cache = load_dynamic_cache()
+    
+    if "maps" not in cache: cache["maps"] = {}
+    if "players" not in cache: cache["players"] = {}
+    
+    if maps: cache["maps"][name] = maps
+    if players: cache["players"][name] = players
+    
+    save_dynamic_cache(cache)
 
 def format_map_stats_for_ai(home_team: str, away_team: str) -> str:
     h_maps = get_team_map_stats(home_team)

@@ -1,71 +1,62 @@
-
 import sqlite3
 import random
 import os
 
-def populate_cs2_test_data(db_path: str = "chimera_predictions.db"):
+def populate_test_data(db_path: str = "chimera_predictions.db"):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Удаляем таблицу, если она существует, чтобы гарантировать актуальную схему
-    cursor.execute("DROP TABLE IF EXISTS cs2_predictions;")
-
-    # Убедимся, что таблица cs2_predictions существует с нужными колонками
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS cs2_predictions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        match_id TEXT NOT NULL,
-        sport TEXT NOT NULL,
-        home_team TEXT NOT NULL,
-        away_team TEXT NOT NULL,
-        outcome TEXT NOT NULL, -- П1 или П2
-        odds REAL NOT NULL,
-        prob REAL NOT NULL,
-        ev REAL NOT NULL,
-        kelly REAL NOT NULL,
-        result TEXT, -- \'П1\', \'П2\', или \'CANCEL\'
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        result_checked_at TIMESTAMP -- Добавлено
-    );
-    """)
-
-    test_data = []
-    # Сгенерируем 100 тестовых прогнозов
-    for i in range(100):
-        ev = random.uniform(0.01, 0.30) # EV от 1% до 30%
-        odds = random.uniform(1.5, 3.0)
-        prob = (ev + 1) / odds
-        kelly = random.uniform(0.05, 0.15)
-        outcome = "П1"
-
-        # Создадим сценарий: прогнозы с EV > 10% более точные
-        is_correct = False
-        if ev > 0.10:
-            # 70% шанс на правильный исход, если EV > 10%
-            if random.random() < 0.7:
-                is_correct = True
-        else:
-            # 45% шанс на правильный исход, если EV <= 10%
-            if random.random() < 0.45:
-                is_correct = True
-
-        result = "П1" if is_correct else "П2"
-        result_checked_at = "2024-03-14 12:00:00" # Для тестовых данных
-
-        test_data.append((
-            f"test_match_{i}", "cs2", "Team A", "Team B", outcome, odds, prob, ev, kelly, result, result_checked_at
-        ))
-
-    cursor.executemany(
-        "INSERT INTO cs2_predictions (match_id, sport, home_team, away_team, outcome, odds, prob, ev, kelly, result, result_checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        test_data
-    )
+    for sport in ['football', 'cs2']:
+        table_name = f"{sport}_predictions"
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        cols = [c[1] for c in cursor.fetchall()]
+        if not cols: continue
+            
+        cursor.execute(f"DELETE FROM {table_name}")
+        
+        test_data = []
+        for i in range(50):
+            ev = random.uniform(0.01, 0.25)
+            is_correct = (random.random() < 0.65) if ev >= 0.10 else (random.random() < 0.30)
+            
+            # Определяем колонку результата
+            res_col = "real_outcome" if "real_outcome" in cols else "result"
+            
+            data = {
+                "match_id": f"test_{sport}_{i}",
+                "match_date": "2026-03-14",
+                "home_team": "Team A",
+                "away_team": "Team B",
+                "league": "Test League",
+                res_col: "П1" if is_correct else "П2",
+                "value_bet_outcome": "П1",
+                "value_bet_odds": 2.0,
+                "value_bet_ev": ev,
+                "value_bet_kelly": 0.1,
+                "sport": sport,
+                "outcome": "П1",
+                "odds": 2.0,
+                "prob": 0.5,
+                "ev": ev,
+                "kelly": 0.1
+            }
+            
+            row = []
+            valid_cols = []
+            for k, v in data.items():
+                if k in cols:
+                    valid_cols.append(k)
+                    row.append(v)
+            
+            test_data.append(tuple(row))
+            
+        col_str = ", ".join(valid_cols)
+        placeholders = ", ".join(["?"] * len(valid_cols))
+        cursor.executemany(f"INSERT INTO {table_name} ({col_str}) VALUES ({placeholders})", test_data)
 
     conn.commit()
     conn.close()
-    print(f"База данных заполнена {len(test_data)} тестовыми записями для CS2.")
+    print("База данных заполнена.")
 
 if __name__ == "__main__":
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(script_dir, "chimera_predictions.db")
-    populate_cs2_test_data(db_path=db_path)
+    populate_test_data()

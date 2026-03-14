@@ -2,10 +2,7 @@
 scripts/update_hltv_stats.py — Ежедневное обновление статистики HLTV
 =====================================================================
 Использует API-зеркало для получения данных без капчи и браузера.
-Исправлены ошибки кодировки для Windows (Unicode/cp1252).
-
-Запуск:
-    python scripts/update_hltv_stats.py
+Обновляет динамический кэш в hltv_stats.py.
 """
 
 import json
@@ -21,57 +18,37 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Настройка логирования с поддержкой UTF-8 в Windows
-def setup_logging():
-    log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+from sports.cs2.hltv_stats import update_team_stats
 
-    # Консольный вывод
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(log_formatter)
-    
-    # Исправление для Windows: принудительно используем utf-8 если возможно
-    if sys.platform == "win32":
-        try:
-            import codecs
-            sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
-        except:
-            pass
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
-    root_logger.addHandler(console_handler)
-    return logging.getLogger(__name__)
-
-logger = setup_logging()
-
-# ─── Команды для обновления ──────────────────────────────────────────────────
+# Команды для обновления
 TEAMS_TO_UPDATE = [
-    ("Team Vitality",   9565,  "vitality"),
-    ("G2 Esports",      5995,  "g2"),
-    ("FaZe Clan",       6667,  "faze"),
-    ("Natus Vincere",   4608,  "natus-vincere"),
-    ("Team Spirit",     7020,  "spirit"),
-    ("MOUZ",            4494,  "mouz"),
-    ("Heroic",          7175,  "heroic"),
-    ("Astralis",        4411,  "astralis"),
-    ("Team Liquid",     5973,  "liquid"),
-    ("FURIA",           8297,  "furia"),
-    ("The MongolZ",     11595, "the-mongolz"),
-    ("Cloud9",          5005,  "cloud9"),
-    ("BIG",             8068,  "big"),
-    ("Falcons",         12279, "falcons"),
+    ("Team Vitality",   9565),
+    ("G2 Esports",      5995),
+    ("FaZe Clan",       6667),
+    ("Natus Vincere",   4608),
+    ("Team Spirit",     7020),
+    ("MOUZ",            4494),
+    ("Heroic",          7175),
+    ("Astralis",        4411),
+    ("Team Liquid",     5973),
+    ("FURIA",           8297),
+    ("The MongolZ",     11595),
+    ("Cloud9",          5005),
+    ("BIG",             8068),
+    ("Falcons",         12279),
+    ("Eternal Fire",    11518),
+    ("paiN",            4773),
 ]
 
 def get_team_data_api(team_id: int):
-    """
-    Получение данных через открытое API-зеркало HLTV.
-    Это работает без браузера и капчи.
-    """
-    # Используем публичное зеркало API HLTV
+    """Получение данных через API-зеркало HLTV."""
     base_url = f"https://hltv-api.vercel.app/api/team/{team_id}"
     
     try:
-        response = requests.get(base_url, timeout=10)
+        response = requests.get(base_url, timeout=15)
         if response.status_code == 200:
             data = response.json()
             
@@ -97,64 +74,26 @@ def get_team_data_api(team_id: int):
         
     return None, None
 
-def generate_hltv_stats_file(map_results: dict, player_results: dict, update_date: str) -> str:
-    content = f'"""\nHLTV Stats — Автоматически обновляемые данные\nДата обновления: {update_date}\n"""\n\n'
-    
-    content += "MAP_STATS: dict[str, dict[str, float]] = {\n"
-    for team, maps in map_results.items():
-        content += f'    "{team}": {json.dumps(maps)},\n'
-    content += "}\n\n"
-    
-    content += "PLAYER_STATS: dict[str, list[dict]] = {\n"
-    for team, players in player_results.items():
-        content += f'    "{team}": {json.dumps(players)},\n'
-    content += "}\n\n"
-    
-    content += "TEAM_ALIASES: dict[str, str] = {\n"
-    content += '    "Vitality": "Team Vitality",\n'
-    content += '    "G2": "G2 Esports",\n'
-    content += '    "FaZe": "FaZe Clan",\n'
-    content += '    "NaVi": "Natus Vincere",\n'
-    content += '    "Spirit": "Team Spirit",\n'
-    content += '    "mousesports": "MOUZ",\n'
-    content += '    "Liquid": "Team Liquid",\n'
-    content += "}\n"
-    
-    return content
-
 def run_update():
     update_date = datetime.now().strftime("%Y-%m-%d")
-    map_results = {}
-    player_results = {}
-    
-    logger.info(f"=== HLTV Update via API started: {update_date} ===")
+    logger.info(f"=== HLTV Update started: {update_date} ===")
 
-    for team_name, team_id, slug in TEAMS_TO_UPDATE:
-        logger.info(f"Обновление {team_name}...")
+    success_count = 0
+    for team_name, team_id in TEAMS_TO_UPDATE:
+        logger.info(f"Обновление {team_name} (ID: {team_id})...")
         
         maps, players = get_team_data_api(team_id)
         
-        if maps:
-            map_results[team_name] = maps
-            logger.info(f"  OK: Карты получены")
-        if players:
-            player_results[team_name] = players
-            logger.info(f"  OK: Игроки получены")
+        if maps or players:
+            update_team_stats(team_name, maps=maps, players=players)
+            logger.info(f"  ✅ {team_name} обновлен")
+            success_count += 1
+        else:
+            logger.warning(f"  ❌ Не удалось получить данные для {team_name}")
             
-        time.sleep(1) # Небольшая пауза, чтобы не нагружать API
+        time.sleep(1)
         
-    if map_results or player_results:
-        stats_file = PROJECT_ROOT / "sports" / "cs2" / "hltv_stats.py"
-        new_content = generate_hltv_stats_file(map_results, player_results, update_date)
-        stats_file.write_text(new_content, encoding="utf-8")
-        logger.info(f"=== УСПЕХ: hltv_stats.py обновлен ===")
-        return True
-    else:
-        logger.error("=== ОШИБКА: Данные не получены ===")
-        return False
+    logger.info(f"=== Обновление завершено. Успешно: {success_count}/{len(TEAMS_TO_UPDATE)} ===")
 
 if __name__ == "__main__":
-    try:
-        run_update()
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+    run_update()
