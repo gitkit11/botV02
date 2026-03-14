@@ -26,8 +26,8 @@ def get_team_map_stats(team_name: str):
             
             team_stats_link = page.evaluate("""
                 (teamName) => {
-                    const links = Array.from(document.querySelectorAll(\'a\'));
-                    const hltvLink = links.find(a => a.href.includes(\'hltv.org/stats/teams/\') && a.href.includes(\'/\' + teamName.toLowerCase().replace(/ /g, \'-\' ) + \'/\'));
+                    const links = Array.from(document.querySelectorAll('a'));
+                    const hltvLink = links.find(a => a.href.includes('hltv.org/stats/teams/') && a.href.includes('/' + teamName.toLowerCase().replace(/ /g, '-') + '/'));
                     return hltvLink ? hltvLink.href : null;
                 }
             """, team_name)
@@ -42,9 +42,9 @@ def get_team_map_stats(team_name: str):
             page.wait_for_timeout(3000)
             
             # 3. Кликаем на вкладку "Maps" (если она есть и не активна)
-            mapsTab = page.query_selector("a.stats-top-menu-item[href$=\'/maps\']")
+            mapsTab = page.query_selector("a.stats-top-menu-item[href$='/maps']")
             if mapsTab:
-                isSelected = mapsTab.evaluate("node => node.classList.contains(\'stats-top-menu-item-selected\')")
+                isSelected = mapsTab.evaluate("node => node.classList.contains('stats-top-menu-item-selected')")
                 if not isSelected:
                     mapsTab.click()
                     page.wait_for_timeout(2000)
@@ -53,14 +53,14 @@ def get_team_map_stats(team_name: str):
             mapStats = page.evaluate("""
                 () => {
                     const stats = {};
-                    const mapRows = document.querySelectorAll(\".stats-table tbody tr\");
+                    const mapRows = document.querySelectorAll('.stats-table tbody tr');
                     mapRows.forEach(row => {
-                        const mapNameElement = row.querySelector(\".stats-table-map-name\");
-                        const winRateElement = row.querySelector(\".stats-table-win-rate\");
+                        const mapNameElement = row.querySelector('.stats-table-map-name');
+                        const winRateElement = row.querySelector('.stats-table-win-rate');
                         if (mapNameElement && winRateElement) {
                             const mapName = mapNameElement.innerText.trim();
                             const winRateText = winRateElement.innerText.trim();
-                            const winRate = parseFloat(winRateText.replace(\"%\", \"\"));
+                            const winRate = parseFloat(winRateText.replace('%', ''));
                             if (!isNaN(winRate)) {
                                 stats[mapName] = winRate;
                             }
@@ -96,14 +96,14 @@ def get_hltv_odds(team1: str, team2: str):
             page.wait_for_timeout(2000)
             
             # 2. Ищем ссылку на матч по названиям команд (более гибкий поиск)
-            match_link = page.evaluate(f"""
+            match_link = page.evaluate("""
                 (t1, t2) => {
-                    const matchNodes = document.querySelectorAll(\".upcomingMatch, .liveMatch, .match-day .match\");
+                    const matchNodes = document.querySelectorAll('.upcomingMatch, .liveMatch, .match-day .match');
                     for (const node of matchNodes) {
                         const text = node.innerText.toLowerCase();
                         if (text.includes(t1) || text.includes(t2)) {
                             if (text.includes(t1) && text.includes(t2)) {
-                                const a = node.querySelector(\'a\');
+                                const a = node.querySelector('a');
                                 return a ? a.href : null;
                             }
                         }
@@ -119,8 +119,8 @@ def get_hltv_odds(team1: str, team2: str):
                 page.wait_for_timeout(2000)
                 match_link = page.evaluate("""
                     () => {
-                        const links = Array.from(document.querySelectorAll(\'a\'));
-                        const hltvLink = links.find(a => a.href.includes(\'hltv.org/matches/\'));
+                        const links = Array.from(document.querySelectorAll('a'));
+                        const hltvLink = links.find(a => a.href.includes('hltv.org/matches/'));
                         return hltvLink ? hltvLink.href : null;
                     }
                 """)
@@ -140,41 +140,41 @@ def get_hltv_odds(team1: str, team2: str):
                     const result = {};
                     
                     // Вариант 1: Стандартные ячейки
-                    const oddsCells = document.querySelectorAll(\".odds-cell\");
+                    const oddsCells = document.querySelectorAll('.odds-cell');
                     if (oddsCells.length >= 2) {
-                        result[\'team1\'] = oddsCells[0].innerText.trim();
-                        result[\'team2\'] = oddsCells[1].innerText.trim();
+                        result['team1'] = oddsCells[0].innerText.trim();
+                        result['team2'] = oddsCells[1].innerText.trim();
                     }
                     
                     // Вариант 2: Блок букмекеров
                     if (!result.team1) {
-                        const bookmakerOdds = document.querySelectorAll(\".bookmaker-odds-container\");
+                        const bookmakerOdds = document.querySelectorAll('.bookmaker-odds-container');
                         if (bookmakerOdds.length > 0) {
-                            const oddsValues = bookmakerOdds[0].querySelectorAll(\".odds-value\");
+                            const oddsValues = bookmakerOdds[0].querySelectorAll('.odds-value');
                             if (oddsValues.length >= 2) {
-                                result[\'team1\'] = oddsValues[0].innerText.trim();
-                                result[\'team2\'] = oddsValues[1].innerText.trim();
+                                result['team1'] = oddsValues[0].innerText.trim();
+                                result['team2'] = oddsValues[1].innerText.trim();
                             }
                         }
                     }
                     
                     // Вариант 3: Сравнение коэффициентов
                     if (!result.team1) {
-                        const externalOdds = document.querySelectorAll(\".external-odds\");
+                        const externalOdds = document.querySelectorAll('.external-odds');
                         if (externalOdds.length >= 2) {
-                            result[\'team1\'] = externalOdds[0].innerText.trim();
-                            result[\'team2\'] = externalOdds[1].innerText.trim();
+                            result['team1'] = externalOdds[0].innerText.trim();
+                            result['team2'] = externalOdds[1].innerText.trim();
                         }
                     }
 
                     // Вариант 4: Блок сравнения коэффициентов (betting-listing)
                     if (!result.team1) {
-                        const bettingListing = document.querySelector(\".betting-listing\");
+                        const bettingListing = document.querySelector('.betting-listing');
                         if (bettingListing) {
-                            const odds = bettingListing.querySelectorAll(\".percentage\");
+                            const odds = bettingListing.querySelectorAll('.percentage');
                             if (odds.length >= 2) {
-                                result[\'team1\'] = odds[0].innerText.trim();
-                                result[\'team2\'] = odds[1].innerText.trim();
+                                result['team1'] = odds[0].innerText.trim();
+                                result['team2'] = odds[1].innerText.trim();
                             }
                         }
                     }
@@ -185,11 +185,11 @@ def get_hltv_odds(team1: str, team2: str):
             
             browser.close()
             
-            if odds and \'team1\' in odds and \'team2\' in odds:
+            if odds and 'team1' in odds and 'team2' in odds:
                 try:
                     # Очищаем от лишних символов (оставляем только цифры и точку)
-                    t1_odds_str = re.sub(r\'[^0-9.]\', \'\', odds[\'team1\'])
-                    t2_odds_str = re.sub(r\'[^0-9.]\', \'\', odds[\'team2\'])
+                    t1_odds_str = re.sub(r'[^0-9.]', '', odds['team1'])
+                    t2_odds_str = re.sub(r'[^0-9.]', '', odds['team2'])
                     
                     if t1_odds_str and t2_odds_str:
                         return {"home_win": float(t1_odds_str), "away_win": float(t2_odds_str)}
