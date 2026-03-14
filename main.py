@@ -55,6 +55,7 @@ except ImportError:
     def format_xg_stats(h, a, s='2024'): return ""
     def get_team_xg_stats(t, s='2024'): return None
 from database import init_db, save_prediction, get_statistics, get_pending_predictions, update_result, get_recent_predictions
+from meta_learner import MetaLearner
 try:
     from injuries import get_match_injuries, get_match_injuries_async
     INJURIES_AVAILABLE = True
@@ -748,7 +749,227 @@ _{best_bet}_
 """.strip()
 
 # --- 8. Хендлеры Telegram ---
+@dp.message(Command("stats"))
+async def get_stats_command(message: types.Message):
+    football_stats = get_statistics("football")
+    cs2_stats = get_statistics("cs2")
+
+    response = "📊 **СТАТИСТИКА ПРОГНОЗОВ** 📊\n\n"
+
+    if football_stats and football_stats['total_predictions'] > 0:
+        response += "**⚽ Футбол:**\n"
+        response += f"  Всего прогнозов: {football_stats['total_predictions']} (проверено: {football_stats['checked_predictions']})\n"
+        response += f"  Верных: {football_stats['correct_predictions']}\n"
+        response += f"  Точность: {football_stats['accuracy']:.2f}%\n"
+        response += f"  ROI: {football_stats['roi']:.2f}%\n\n"
+    else:
+        response += "**⚽ Футбол:** Пока нет статистики для отображения.\n\n"
+
+    if cs2_stats and cs2_stats['total_predictions'] > 0:
+        response += "**🎮 CS2:**\n"
+        response += f"  Всего прогнозов: {cs2_stats['total_predictions']} (проверено: {cs2_stats['checked_predictions']})\n"
+        response += f"  Верных: {cs2_stats['correct_predictions']}\n"
+        response += f"  Точность: {cs2_stats['accuracy']:.2f}%\n"
+        response += f"  ROI: {cs2_stats['roi']:.2f}%\n\n"
+    else:
+        response += "**🎮 CS2:** Пока нет статистики для отображения.\n\n"
+
+    await message.answer(response, parse_mode="Markdown")
+    # --- Команда /learn_and_suggest ---
+@dp.message(Command("learn_and_suggest"))
+async def learn_and_suggest_command(message: types.Message):
+    await message.answer("Запускаю процесс анализа производительности и поиска предложений по оптимизации...")
+    learner = MetaLearner(signal_engine_path="/home/ubuntu/bot1/signal_engine.py")
+
+    # Анализ для CS2
+    cs2_performance = learner.analyze_performance("cs2")
+    cs2_suggestions = learner.suggest_config_updates("cs2", cs2_performance)
+
+    # Анализ для Football
+    football_performance = learner.analyze_performance("football")
+    football_suggestions = learner.suggest_config_updates("football", football_performance)
+
+    response_text = "**Результаты анализа MetaLearner:**\n\n"
+    has_suggestions = False
+
+    if cs2_suggestions:
+        has_suggestions = True
+        response_text += "**🎮 CS2 Предложения:**\n"
+        for key, value in cs2_suggestions.items():
+            response_text += f"  - Изменить `{key}` на `{value}`\n"
+    else:
+        response_text += "**🎮 CS2:** Нет предложений по оптимизации.\n"
+
+    if football_suggestions:
+        has_suggestions = True
+        response_text += "\n**⚽ Футбол Предложения:**\n"
+        for key, value in football_suggestions.items():
+            response_text += f"  - Изменить `{key}` на `{value}`\n"
+    else:
+        response_text += "\n**⚽ Футбол:** Нет предложений по оптимизации.\n"
+
+    if has_suggestions:
+        builder = InlineKeyboardBuilder()
+        builder.add(types.InlineKeyboardButton(text="✅ Принять все предложения", callback_data="meta_learner_accept"))
+        builder.add(types.InlineKeyboardButton(text="❌ Отклонить", callback_data="meta_learner_decline"))
+        await message.answer(response_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    else:
+        await message.answer(response_text + "\n\nТекущие настройки оптимальны или недостаточно данных для предложений.", parse_mode="Markdown")
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("meta_learner_"))
+async def meta_learner_callback_handler(callback_query: types.CallbackQuery):
+    action = callback_query.data.split("_")[2]
+    learner = MetaLearner(signal_engine_path="/home/ubuntu/bot1/signal_engine.py")
+
+    if action == "accept":
+        await callback_query.message.edit_text("Принимаю предложения и применяю изменения...", reply_markup=None)
+        cs2_performance = learner.analyze_performance("cs2")
+        cs2_suggestions = learner.suggest_config_updates("cs2", cs2_performance)
+        if cs2_suggestions:
+            learner.apply_config_updates("cs2", cs2_suggestions)
+
+        football_performance = learner.analyze_performance("football")
+        football_suggestions = learner.suggest_config_updates("football", football_performance)
+        if football_suggestions:
+            learner.apply_config_updates("football", football_suggestions)
+
+        await callback_query.message.answer("✅ Изменения успешно применены! Файл signal_engine.py обновлен (создана резервная копия).", parse_mode="Markdown")
+    elif action == "decline":
+        await callback_query.message.edit_text("❌ Предложения отклонены. Изменения не применены.", reply_markup=None)
+
+    await callback_query.answer() # Закрываем уведомление о нажатии кнопки
+
 dp = Dispatcher()
+
+@dp.message(Command("learn_and_suggest"))
+async def learn_and_suggest_command(message: types.Message):
+    await message.answer("Запускаю процесс анализа производительности и поиска предложений по оптимизации...")
+    learner = MetaLearner(signal_engine_path="/home/ubuntu/bot1/signal_engine.py")
+
+    # Анализ для CS2
+    cs2_performance = learner.analyze_performance("cs2")
+    cs2_suggestions = learner.suggest_config_updates("cs2", cs2_performance)
+
+    # Анализ для Football
+    football_performance = learner.analyze_performance("football")
+    football_suggestions = learner.suggest_config_updates("football", football_performance)
+
+    response_text = "**Результаты анализа MetaLearner:**\n\n"
+    has_suggestions = False
+
+    if cs2_suggestions:
+        has_suggestions = True
+        response_text += "**🎮 CS2 Предложения:**\n"
+        for key, value in cs2_suggestions.items():
+            response_text += f"  - Изменить `{key}` на `{value}`\n"
+    else:
+        response_text += "**🎮 CS2:** Нет предложений по оптимизации.\n"
+
+    if football_suggestions:
+        has_suggestions = True
+        response_text += "\n**⚽ Футбол Предложения:**\n"
+        for key, value in football_suggestions.items():
+            response_text += f"  - Изменить `{key}` на `{value}`\n"
+    else:
+        response_text += "\n**⚽ Футбол:** Нет предложений по оптимизации.\n"
+
+    if has_suggestions:
+        builder = InlineKeyboardBuilder()
+        builder.add(types.InlineKeyboardButton(text="✅ Принять все предложения", callback_data="meta_learner_accept"))
+        builder.add(types.InlineKeyboardButton(text="❌ Отклонить", callback_data="meta_learner_decline"))
+        await message.answer(response_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    else:
+        await message.answer(response_text + "\n\nТекущие настройки оптимальны или недостаточно данных для предложений.", parse_mode="Markdown")
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("meta_learner_"))
+async def meta_learner_callback_handler(callback_query: types.CallbackQuery):
+    action = callback_query.data.split("_")[2]
+    learner = MetaLearner(signal_engine_path="/home/ubuntu/bot1/signal_engine.py")
+
+    if action == "accept":
+        await callback_query.message.edit_text("Принимаю предложения и применяю изменения...", reply_markup=None)
+        cs2_performance = learner.analyze_performance("cs2")
+        cs2_suggestions = learner.suggest_config_updates("cs2", cs2_performance)
+        if cs2_suggestions:
+            learner.apply_config_updates("cs2", cs2_suggestions)
+
+        football_performance = learner.analyze_performance("football")
+        football_suggestions = learner.suggest_config_updates("football", football_performance)
+        if football_suggestions:
+            learner.apply_config_updates("football", football_suggestions)
+
+        await callback_query.message.answer("✅ Изменения успешно применены! Файл signal_engine.py обновлен (создана резервная копия).", parse_mode="Markdown")
+    elif action == "decline":
+        await callback_query.message.edit_text("❌ Предложения отклонены. Изменения не применены.", reply_markup=None)
+
+    await callback_query.answer() # Закрываем уведомление о нажатии кнопки
+
+
+
+@dp.message(Command("learn_and_suggest"))
+async def learn_and_suggest_command(message: types.Message):
+    await message.answer("Запускаю процесс анализа производительности и поиска предложений по оптимизации...")
+    learner = MetaLearner(signal_engine_path="/home/ubuntu/bot1/signal_engine.py")
+
+    # Анализ для CS2
+    cs2_performance = learner.analyze_performance("cs2")
+    cs2_suggestions = learner.suggest_config_updates("cs2", cs2_performance)
+
+    # Анализ для Football
+    football_performance = learner.analyze_performance("football")
+    football_suggestions = learner.suggest_config_updates("football", football_performance)
+
+    response_text = "**Результаты анализа MetaLearner:**\n\n"
+    has_suggestions = False
+
+    if cs2_suggestions:
+        has_suggestions = True
+        response_text += "**🎮 CS2 Предложения:**\n"
+        for key, value in cs2_suggestions.items():
+            response_text += f"  - Изменить `{key}` на `{value}`\n"
+    else:
+        response_text += "**🎮 CS2:** Нет предложений по оптимизации.\n"
+
+    if football_suggestions:
+        has_suggestions = True
+        response_text += "\n**⚽ Футбол Предложения:**\n"
+        for key, value in football_suggestions.items():
+            response_text += f"  - Изменить `{key}` на `{value}`\n"
+    else:
+        response_text += "\n**⚽ Футбол:** Нет предложений по оптимизации.\n"
+
+    if has_suggestions:
+        builder = InlineKeyboardBuilder()
+        builder.add(types.InlineKeyboardButton(text="✅ Принять все предложения", callback_data="meta_learner_accept"))
+        builder.add(types.InlineKeyboardButton(text="❌ Отклонить", callback_data="meta_learner_decline"))
+        await message.answer(response_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    else:
+        await message.answer(response_text + "\n\nТекущие настройки оптимальны или недостаточно данных для предложений.", parse_mode="Markdown")
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("meta_learner_"))
+async def meta_learner_callback_handler(callback_query: types.CallbackQuery):
+    action = callback_query.data.split("_")[2]
+    learner = MetaLearner(signal_engine_path="/home/ubuntu/bot1/signal_engine.py")
+
+    if action == "accept":
+        await callback_query.message.edit_text("Принимаю предложения и применяю изменения...", reply_markup=None)
+        cs2_performance = learner.analyze_performance("cs2")
+        cs2_suggestions = learner.suggest_config_updates("cs2", cs2_performance)
+        if cs2_suggestions:
+            learner.apply_config_updates("cs2", cs2_suggestions)
+
+        football_performance = learner.analyze_performance("football")
+        football_suggestions = learner.suggest_config_updates("football", football_performance)
+        if football_suggestions:
+            learner.apply_config_updates("football", football_suggestions)
+
+        await callback_query.message.answer("✅ Изменения успешно применены! Файл signal_engine.py обновлен (создана резервная копия).", parse_mode="Markdown")
+    elif action == "decline":
+        await callback_query.message.edit_text("❌ Предложения отклонены. Изменения не применены.", reply_markup=None)
+
+    await callback_query.answer() # Закрываем уведомление о нажатии кнопки
+
+
 
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
