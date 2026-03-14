@@ -2,8 +2,161 @@ import asyncio
 import logging
 import re
 from playwright.async_api import async_playwright
+import json
 
 logger = logging.getLogger(__name__)
+
+async def get_team_map_stats_async(team_name: str):
+    """
+    Парсит статистику карт команды с HLTV.org.
+    Возвращает словарь: {map_name: win_rate_percent}
+    """
+    logger.info(f"Searching HLTV for map stats of: {team_name}")
+    
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            )
+            page = await context.new_page()
+            
+            # 1. Ищем ID команды на HLTV
+            search_query = f"{team_name} hltv team stats".replace(" ", "+")
+            await page.goto(f"https://duckduckgo.com/?q={search_query}", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)
+            
+            team_stats_link = await page.evaluate("""
+                () => {
+                    const links = Array.from(document.querySelectorAll('a'));
+                    const hltvLink = links.find(a => a.href.includes('hltv.org/stats/teams/') && a.href.includes('/' + '{team_name.lower().replace(' ', '-')}' + '/'));
+                    return hltvLink ? hltvLink.href : null;
+                }
+            """)
+            
+            if not team_stats_link:
+                logger.warning(f"Team stats link for {team_name} not found on HLTV")
+                await browser.close()
+                return {}
+            
+            # 2. Переходим на страницу статистики команды
+            await page.goto(team_stats_link, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            
+            # 3. Кликаем на вкладку 
+
+async def get_hltv_odds_async(team1: str, team2: str):
+    """
+    Парсит коэффициенты с HLTV.org для указанных команд.
+    Поддерживает поиск по предстоящим матчам и прямым ссылкам.
+    """
+    logger.info(f"Searching HLTV for: {team1} vs {team2}")
+    
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            )
+            page = await context.new_page()
+            
+            # 1. Идем на страницу матчей
+            await page.goto("https://www.hltv.org/matches", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)
+            
+            # 2. Ищем ссылку на матч по названиям команд (более гибкий поиск)
+            match_link = await page.evaluate(f"""
+                () => {{
+                    const t1 = "{team1.lower()}";
+                    const t2 = "{team2.lower()}";
+                    
+                    // Ищем во всех блоках матчей
+                    const matchNodes = document.querySelectorAll('.upcomingMatch, .liveMatch, .match-day .match');
+                    for (const node of matchNodes) {{
+                        const text = node.innerText.toLowerCase();
+                        // Проверяем наличие обеих команд в тексте блока
+                        if (text.includes(t1) || text.includes(t2)) {{
+                            // Если нашли хотя бы одну, проверяем вторую для надежности
+                            if (text.includes(t1) && text.includes(t2)) {{
+                                const a = node.querySelector('a');
+                                return a ? a.href : null;
+                            }}
+                        }}
+                    }}
+                    return null;
+                }}
+            """)
+            
+            # 3. Если не нашли на главной, пробуем поиск через DuckDuckGo (более стабильно чем Google без API)
+            if not match_link:
+                search_query = f"{team1} vs {team2} hltv matches".replace(" ", "+")
+                await page.goto(f"https://duckduckgo.com/?q={search_query}", wait_until="domcontentloaded")
+                await page.wait_for_timeout(2000)
+                match_link = await page.evaluate("""
+                    () => {
+                        const links = Array.from(document.querySelectorAll('a'));
+                        const hltvLink = links.find(a => a.href.includes('hltv.org/matches/'));
+                        return hltvLink ? hltvLink.href : null;
+                    }
+                """)
+
+            if not match_link:
+                logger.warning(f"Match {team1} vs {team2} not found on HLTV")
+                await browser.close()
+                return None
+            
+            # 4. Переходим на страницу матча
+            await page.goto(match_link, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            
+            // 3. Кликаем на вкладку "Maps" (если она есть и не активна)
+            const mapsTab = await page.$("a.stats-top-menu-item[href$='/maps']");
+            if (mapsTab) {
+                const isSelected = await mapsTab.evaluate(node => node.classList.contains('stats-top-menu-item-selected'));
+                if (!isSelected) {
+                    await mapsTab.click();
+                    await page.wait_for_timeout(2000);
+                }
+            }
+
+            # 4. Извлекаем статистику по картам
+            const mapStats = await page.evaluate("""
+                () => {
+                    const stats = {};
+                    const mapRows = document.querySelectorAll('.stats-table tbody tr');
+                    mapRows.forEach(row => {
+                        const mapNameElement = row.querySelector('.stats-table-map-name');
+                        const winRateElement = row.querySelector('.stats-table-win-rate');
+                        if (mapNameElement && winRateElement) {
+                            const mapName = mapNameElement.innerText.trim();
+                            const winRateText = winRateElement.innerText.trim();
+                            const winRate = parseFloat(winRateText.replace('%', ''));
+                            if (!isNaN(winRate)) {
+                                stats[mapName] = winRate;
+                            }
+                        }
+                    });
+                    return stats;
+                }
+            """);
+            
+            await browser.close()
+            return mapStats
+    except Exception as e:
+        logger.error(f"Error scraping HLTV map stats for {team_name}: {e}")
+        return {}
+
+def get_team_map_stats(team_name: str):
+    """Синхронная обертка для асинхронной функции."""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(get_team_map_stats_async(team_name))
+        loop.close()
+        return result
+    except Exception as e:
+        logger.error(f"Sync wrapper for get_team_map_stats error: {e}")
+        return {}
 
 async def get_hltv_odds_async(team1: str, team2: str):
     """
@@ -132,9 +285,7 @@ async def get_hltv_odds_async(team1: str, team2: str):
                     pass
                 
             return None
-    except Exception as e:
-        logger.error(f"Error scraping HLTV odds: {e}")
-        return None
+
 
 def get_hltv_odds(team1: str, team2: str):
     """Синхронная обертка для асинхронной функции."""

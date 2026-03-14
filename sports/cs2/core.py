@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from .veto_logic import simulate_bo3_veto, get_map_impact_score
 from .pandascore import get_team_stats, get_head_to_head
-from .hltv_odds import get_hltv_odds
+from .hltv_odds import get_hltv_odds, get_team_map_stats_async
 import json
 import asyncio
 
@@ -34,21 +34,30 @@ def get_elo_prob(home_team, away_team):
     h_prob = 1 / (1 + 10 ** ((a_elo - h_elo) / 400))
     return round(h_prob, 3), round(1 - h_prob, 3)
 
-def calculate_cs2_win_prob(home_team, away_team):
+async def calculate_cs2_win_prob(home_team, away_team):
     """
     Расчёт вероятности победы — 3 источника данных:
     1. MIS (Map Impact Score) из вето-симуляции — 40%
     2. ELO рейтинг команд — 35%
     3. Реальный винрейт из PandaScore (последние 20 матчей) — 25%
     """
+    # Получаем статистику карт с HLTV
+    home_map_stats = await get_team_map_stats_async(home_team)
+    away_map_stats = await get_team_map_stats_async(away_team)
+    
+    team_map_stats_combined = {
+        home_team: home_map_stats,
+        away_team: away_map_stats
+    }
+
     # 1. Симулируем мап-вето
-    maps, veto_log = simulate_bo3_veto(home_team, away_team)
+    maps, veto_log = simulate_bo3_veto(home_team, away_team, team_map_stats_combined)
 
     # 2. Считаем MIS для каждой карты
     map_scores = []
     for m in maps:
-        h_mis = get_map_impact_score(home_team, m)
-        a_mis = get_map_impact_score(away_team, m)
+        h_mis = get_map_impact_score(home_team, m, team_map_stats_combined)
+        a_mis = get_map_impact_score(away_team, m, team_map_stats_combined)
         total = h_mis + a_mis
         if total == 0:
             h_prob, a_prob = 0.5, 0.5

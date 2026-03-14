@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
-from openai import OpenAI
+from openai import OpenAI, APIStatusError
 import json
 
 # --- 1. Настройка клиентов ---
@@ -51,6 +51,15 @@ def call_ai(prompt, client_instance, model, retries=2):
             result = json.loads(response.choices[0].message.content)
             print(f"[{model}] Ответ получен: {str(result)[:100]}...")
             return result
+        except APIStatusError as e:
+            print(f"[{model} ОШИБКА API попытка {attempt+1}] {e.status_code}: {e.response}")
+            if e.status_code == 403:
+                print(f"[{model}] Доступ запрещен (403). Проверьте ключ API или сетевые настройки.")
+                return {"error": f"Error code: {e.status_code} - {e.response}", "analysis_summary": f"⚠️ {model} временно недоступен (ошибка 403)",
+                        "recommended_outcome": "Нет данных", "final_confidence_percent": 0,
+                        "total_goals_prediction": "—", "both_teams_to_score_prediction": "—"}
+            if attempt < retries - 1:
+                import time; time.sleep(2)
         except Exception as e:
             print(f"[{model} ОШИБКА попытка {attempt+1}] {type(e).__name__}: {e}")
             if attempt < retries - 1:

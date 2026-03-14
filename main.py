@@ -295,7 +295,8 @@ def build_main_keyboard():
         [types.KeyboardButton(text="📡 Сигналы дня")],
         [types.KeyboardButton(text="⚽ Футбол")],
         [types.KeyboardButton(text="🎾 Теннис"), types.KeyboardButton(text="🎮 Киберспорт CS2")],
-        [types.KeyboardButton(text="📊 Статистика"), types.KeyboardButton(text="💎 VIP-доступ")]
+        [types.KeyboardButton(text="📊 Статистика"), types.KeyboardButton(text="💎 VIP-доступ")],
+        [types.KeyboardButton(text="🆘 Поддержка")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -936,7 +937,7 @@ async def handle_callback(call: types.CallbackQuery):
         await call.message.edit_text(f"⏳ Анализирую *{home_team} vs {away_team}*...", parse_mode="Markdown")
         try:
             from sports.cs2 import calculate_cs2_win_prob, get_golden_signal, format_cs2_full_report, run_cs2_analyst_agent
-            analysis = calculate_cs2_win_prob(home_team, away_team)
+            analysis = await calculate_cs2_win_prob(home_team, away_team)
             analysis["home_team"] = home_team
             analysis["away_team"] = away_team
             odds = m.get("odds", {"home_win": 1.90, "away_win": 1.90})
