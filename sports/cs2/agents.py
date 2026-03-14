@@ -164,11 +164,15 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
     try:
         result = _call_ai(prompt, client, model)
     except Exception as e:
+        # Если Llama через Groq не сработала, пробуем еще раз с увеличенным таймаутом
         if agent_type == "llama-3.3":
-            print(f"[Llama Fallback] Ошибка Llama (403/Access Denied), использую GPT-4o-mini")
-            result = _call_ai(prompt, _gpt_client, "gpt-4.1-mini")
+            try:
+                print(f"[Llama Retry] Ошибка Llama {model}, пробую повторно...")
+                result = _call_ai(prompt, client, model, retries=3)
+            except Exception as e2:
+                result = f"❌ Ошибка Llama 3.3: {str(e2)[:100]}"
         else:
-            result = f"❌ Ошибка {model}: {e}"
+            result = f"❌ Ошибка {model}: {str(e)[:100]}"
             
     return result
 
