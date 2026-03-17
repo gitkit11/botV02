@@ -203,3 +203,106 @@ def get_match_stats(home_team, away_team, league_key="soccer_epl"):
         lines.append(f"\n✈️ {away_team}: статистика недоступна")
 
     return "\n".join(lines)
+
+
+def get_h2h(home_team: str, away_team: str, last_n: int = 10) -> dict | None:
+    """
+    Получает H2H (очные встречи) двух команд через API-Football.
+    Возвращает:
+    {
+      "total": 8,
+      "home_wins": 4, "away_wins": 2, "draws": 2,
+      "home_win_rate": 0.5, "away_win_rate": 0.25, "draw_rate": 0.25,
+      "avg_total_goals": 2.6,
+      "btts_rate": 0.5,   # процент матчей где обе забили
+    }
+    """
+    if not API_FOOTBALL_KEY:
+        return None
+
+    home_id = TEAM_IDS.get(home_team)
+    away_id = TEAM_IDS.get(away_team)
+    if not home_id or not away_id:
+        # Пробуем частичный поиск
+        for name, tid in TEAM_IDS.items():
+            if home_team.lower() in name.lower() or name.lower() in home_team.lower():
+                home_id = tid
+            if away_team.lower() in name.lower() or name.lower() in away_team.lower():
+                away_id = tid
+        if not home_id or not away_id:
+            return None
+
+    cache_key = f"h2h_{min(home_id, away_id)}_{max(home_id, away_id)}_{last_n}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        r = requests.get(
+            f"{BASE_URL}/fixtures/headtohead",
+            headers=HEADERS,
+            params={"h2h": f"{home_id}-{away_id}", "last": last_n},
+            timeout=10
+        )
+        data = r.json()
+        fixtures = data.get("response", [])
+        if not fixtures:
+            return None
+
+        home_wins = away_wins = draws = 0
+        total_goals = btts_count = 0
+
+        for fix in fixtures:
+            goals = fix.get("goals", {})
+            hg = goals.get("home") or 0
+            ag = goals.get("away") or 0
+            total_goals += hg + ag
+            if hg > 0 and ag > 0:
+                btts_count += 1
+
+            home_fix_id = fix.get("teams", {}).get("home", {}).get("id")
+            if hg > ag:
+                if home_fix_id == home_id:
+                    home_wins += 1
+                else:
+                    away_wins += 1
+            elif hg < ag:
+                if home_fix_id == home_id:
+                    away_wins += 1
+                else:
+                    home_wins += 1
+            else:
+                draws += 1
+
+        total = len(fixtures)
+        result = {
+            "total":          total,
+            "home_wins":      home_wins,
+            "away_wins":      away_wins,
+            "draws":          draws,
+            "home_win_rate":  round(home_wins / total, 3) if total else 0.33,
+            "away_win_rate":  round(away_wins / total, 3) if total else 0.33,
+            "draw_rate":      round(draws / total, 3) if total else 0.25,
+            "avg_total_goals": round(total_goals / total, 2) if total else 2.5,
+            "btts_rate":      round(btts_count / total, 3) if total else 0.5,
+        }
+        _cache_set(cache_key, result)
+        print(f"[API-Football H2H] {home_team} vs {away_team}: "
+              f"П1={home_wins} X={draws} П2={away_wins} из {total} матчей")
+        return result
+
+    except Exception as e:
+        print(f"[API-Football H2H] Ошибка {home_team} vs {away_team}: {e}")
+        return None
+
+
+def format_h2h_text(home_team: str, away_team: str, h2h: dict) -> str:
+    """Форматирует H2H для промпта AI агентов."""
+    if not h2h or not h2h.get("total"):
+        return ""
+    return (
+        f"⚔️ H2H (последние {h2h['total']} матчей): "
+        f"{home_team} {h2h['home_wins']}П / {h2h['draws']}Н / {h2h['away_wins']}П {away_team} | "
+        f"Среднее голов: {h2h['avg_total_goals']} | "
+        f"Обе забивали: {round(h2h['btts_rate']*100)}% матчей"
+    )

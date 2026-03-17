@@ -3,42 +3,20 @@ import os
 import requests
 import datetime
 import time
+from difflib import get_close_matches
 from dotenv import load_dotenv
+from .team_registry import PANDASCORE_IDS, TEAM_ALIASES, normalize_team_name
 
 load_dotenv()
 
 PANDASCORE_BASE = "https://api.pandascore.co/csgo"
 
-# Предзаполненный кэш ID топ-команд CS2 (PandaScore IDs)
-# Ключи — все варианты написания имени команды
-_team_cache = {
-    # Team Vitality
-    "Team Vitality": 3455, "Vitality": 3455,
-    # FaZe Clan
-    "FaZe Clan": 3212, "FaZe": 3212,
-    # G2 Esports
-    "G2 Esports": 3210, "G2": 3210,
-    # Natus Vincere
-    "Natus Vincere": 3216, "NaVi": 3216, "Na'Vi": 3216,
-    # Team Spirit
-    "Team Spirit": 124523, "Spirit": 124523,
-    # MOUZ
-    "MOUZ": 3240,
-    # Heroic
-    "Heroic": 3246,
-    # Astralis
-    "Astralis": 3209,
-    # ENCE
-    "ENCE": 3251,
-    # Cloud9
-    "Cloud9": 3223,
-    # Team Liquid
-    "Team Liquid": 3213, "Liquid": 3213,
-    # FURIA
-    "FURIA": 124530,
-    # BIG
-    "BIG": 3248,
-}
+# Рабочий кэш — изначально заполнен из team_registry, пополняется при API-запросах
+_team_cache: dict[str, int] = dict(PANDASCORE_IDS)
+
+# _TEAM_REBRANDS — алиас для обратной совместимости; данные в team_registry.TEAM_ALIASES
+_TEAM_REBRANDS = TEAM_ALIASES
+
 
 def _get_headers():
     key = os.getenv("PANDASCORE_API_KEY")
@@ -60,11 +38,23 @@ def _request_with_retry(url, params=None, retries=3, delay=1.5):
                 print(f"[PandaScore] Все попытки исчерпаны: {e}")
     return None
 
+def _resolve_team_alias(team_name: str) -> str:
+    """Разрешает алиас/ребренд → каноническое имя."""
+    return normalize_team_name(team_name)
+
+
 def get_team_id(team_name):
-    """Ищет ID команды по имени. Кэширует результат."""
+    """Ищет ID команды по имени. Кэширует результат. Поддерживает fuzzy matching."""
+    # Проверяем кэш напрямую
     if team_name in _team_cache:
         return _team_cache[team_name]
-    
+
+    # Проверяем исторические переименования
+    resolved = _resolve_team_alias(team_name)
+    if resolved != team_name and resolved in _team_cache:
+        _team_cache[team_name] = _team_cache[resolved]
+        return _team_cache[team_name]
+
     # 1. Поиск по точному имени (filter[name])
     r = _request_with_retry(f"{PANDASCORE_BASE}/teams", params={"filter[name]": team_name})
     if r and r.ok:
@@ -72,7 +62,7 @@ def get_team_id(team_name):
         if teams:
             _team_cache[team_name] = teams[0]["id"]
             return teams[0]["id"]
-            
+
     # 2. Поиск по частичному совпадению (search[name])
     r = _request_with_retry(f"{PANDASCORE_BASE}/teams", params={"search[name]": team_name, "per_page": 5})
     if r and r.ok:
@@ -84,6 +74,15 @@ def get_team_id(team_name):
                     return t["id"]
             _team_cache[team_name] = teams[0]["id"]
             return teams[0]["id"]
+
+    # 3. Fuzzy matching по известным именам в кэше (cutoff 0.80 = 80% сходства)
+    known_names = [k for k, v in _team_cache.items() if isinstance(v, int)]
+    close = get_close_matches(team_name, known_names, n=1, cutoff=0.80)
+    if close:
+        print(f"[PandaScore] Fuzzy match: '{team_name}' → '{close[0]}'")
+        _team_cache[team_name] = _team_cache[close[0]]
+        return _team_cache[team_name]
+
     return None
 
 def get_team_stats(team_name, last_n=20):
@@ -130,6 +129,58 @@ def get_team_stats(team_name, last_n=20):
         "form": form,
         "matches": total
     }
+
+def get_team_map_winrates(team_name: str, last_n: int = 30) -> dict:
+    """
+    Считает реальный винрейт команды по каждой карте из истории матчей PandaScore.
+    Возвращает: {"Inferno": 58.3, "Mirage": 44.0, ...} — винрейт в процентах.
+    Если данных нет — возвращает пустой dict.
+    """
+    team_id = get_team_id(team_name)
+    if not team_id:
+        return {}
+
+    r = _request_with_retry(
+        f"{PANDASCORE_BASE}/matches/past",
+        params={"filter[opponent_id]": team_id, "per_page": last_n, "sort": "-end_at"},
+    )
+    if not r or not r.ok:
+        return {}
+
+    map_wins   = {}
+    map_total  = {}
+
+    for match in r.json():
+        if match.get("status") != "finished":
+            continue
+        opponents = match.get("opponents", [])
+        if len(opponents) < 2:
+            continue
+        home_id = opponents[0]["opponent"]["id"]
+        away_id = opponents[1]["opponent"]["id"]
+
+        for game in match.get("games", []):
+            if game.get("status") != "finished":
+                continue
+            map_data = game.get("map") or {}
+            map_name = map_data.get("name", "") if isinstance(map_data, dict) else str(map_data)
+            if not map_name or map_name.lower() in ("", "none", "unknown"):
+                continue
+
+            winner_obj = game.get("winner") or {}
+            winner_id  = winner_obj.get("id") if isinstance(winner_obj, dict) else None
+
+            map_total[map_name] = map_total.get(map_name, 0) + 1
+            if winner_id == team_id:
+                map_wins[map_name] = map_wins.get(map_name, 0) + 1
+
+    result = {}
+    for m, total in map_total.items():
+        if total >= 2:  # минимум 2 игры на карте чтобы считать
+            result[m] = round(map_wins.get(m, 0) / total * 100, 1)
+
+    return result
+
 
 def get_head_to_head(team1_name, team2_name, last_n=10):
     """
@@ -220,13 +271,10 @@ def parse_pandascore_item(item, status_label):
     is_live = item.get("status") == "running"
     display_status = "🟢 LIVE" if is_live else time_str
 
-    # Извлекаем коэффициенты (если есть в API)
-    # PandaScore в бесплатном тарифе редко дает коэффициенты в основном объекте.
-    # По умолчанию ставим 0, чтобы в отчете было понятно, что данных нет.
+    # Коэффициенты: сначала PandaScore, потом Pinnacle как fallback
     home_odds = 0
     away_odds = 0
-    
-    # 1. Попытка найти в market_odds (если есть)
+
     if item.get("market_odds"):
         for market in item["market_odds"]:
             if "winner" in market.get("name", "").lower():
@@ -236,9 +284,7 @@ def parse_pandascore_item(item, status_label):
                     elif selection.get("name") == away:
                         away_odds = selection.get("odds", 0)
 
-    # 2. Попытка найти в поле odds (иногда PandaScore отдает так)
     if home_odds == 0 and item.get("odds"):
-        # Бывает список или словарь
         odds_data = item["odds"]
         if isinstance(odds_data, list):
             for o in odds_data:
@@ -248,6 +294,21 @@ def parse_pandascore_item(item, status_label):
             home_odds = odds_data.get("home_win", 0) or odds_data.get("home", 0)
             away_odds = odds_data.get("away_win", 0) or odds_data.get("away", 0)
 
+    # Fallback: берём коэффициенты из Pinnacle (бесплатно, без ключа)
+    if home_odds == 0 or away_odds == 0:
+        try:
+            from .pinnacle_cs2 import get_match_odds
+            pin = get_match_odds(home, away)
+            if pin:
+                home_odds = pin["odds_home"]
+                away_odds = pin["odds_away"]
+        except Exception:
+            pass
+
+    _league_name = item.get('league', {}).get('name', '') if isinstance(item.get('league'), dict) else str(item.get('league', ''))
+    _tournament_name = item.get('tournament', {}).get('name', '') if isinstance(item.get('tournament'), dict) else str(item.get('tournament', ''))
+    _tier_info = classify_tournament(_league_name, _tournament_name)
+
     return {
         "id": item['id'],
         "home": home,
@@ -255,12 +316,160 @@ def parse_pandascore_item(item, status_label):
         "home_id": home_id,
         "away_id": away_id,
         "time": display_status,
+        "commence_time": start_time,       # ISO UTC — для отображения в отчёте
         "odds": {"home_win": home_odds, "away_win": away_odds},
-        "league": item.get('league', {}).get('name', 'Tier-2/3'),
+        "league": _league_name or 'Tier-2/3',
         "match_type": item.get('match_type', 'best_of_3'),
-        "tournament": item.get('tournament', {}).get('name', '')
+        "tournament": _tournament_name,
+        "tier": _tier_info["tier"],        # S/A/B/C
+        "tier_label": _tier_info["label"], # 🏆 Major / 🎮 LAN Tier-A / etc.
     }
 
 def get_combined_cs2_matches():
     """Интерфейс для main.py."""
     return get_cs2_matches_pandascore()
+
+
+# ─── Контекст турнира ────────────────────────────────────────────────────────
+
+# Ключевые слова для классификации
+_MAJOR_KW    = ["major", "pgl major", "blast major", "esl major"]
+_LAN_S_KW    = ["katowice", "cologne", "esl one", "iem", "blast premier final",
+                 "pro league final", "rio", "paris", "copenhagen"]
+_LAN_A_KW    = ["blast premier", "pro league", "esl pro league", "navi cup lan",
+                 "dreamhack", "weplay", "starladder lan", "lan"]
+_ONLINE_KW   = ["online", "regional", "qualifier", "open", "closed", "league season"]
+
+def classify_tournament(league_name: str, tournament_name: str) -> dict:
+    """
+    Классифицирует турнир: тип (major/lan_s/lan_a/online/regional) и тир (S/A/B/C).
+    Возвращает {"type": ..., "tier": ..., "label": ...}
+    """
+    combined = (league_name + " " + tournament_name).lower()
+
+    if any(kw in combined for kw in _MAJOR_KW):
+        return {"type": "major",   "tier": "S", "label": "🏆 Major"}
+    if any(kw in combined for kw in _LAN_S_KW):
+        return {"type": "lan_s",   "tier": "S", "label": "🎯 LAN Tier-S"}
+    if any(kw in combined for kw in _LAN_A_KW):
+        return {"type": "lan_a",   "tier": "A", "label": "🎮 LAN Tier-A"}
+    if any(kw in combined for kw in _ONLINE_KW):
+        return {"type": "online",  "tier": "B", "label": "💻 Online"}
+    # По умолчанию — онлайн лига
+    return {"type": "online", "tier": "B", "label": "💻 Online"}
+
+
+# ─── Взвешенная форма (последние 5 важнее) ───────────────────────────────────
+
+def get_team_weighted_form(team_name: str, last_n: int = 20) -> dict:
+    """
+    Возвращает взвешенный винрейт: последние 5 матчей вес 60%, остальные 40%.
+    {'winrate': 0.72, 'winrate_last5': 0.80, 'winrate_old': 0.66, 'form': 'WWLWW', 'matches': 18}
+    """
+    team_id = get_team_id(team_name)
+    if not team_id:
+        return {"winrate": 0.5, "winrate_last5": 0.5, "winrate_old": 0.5,
+                "form": "?????", "matches": 0, "wins": 0, "losses": 0}
+
+    r = _request_with_retry(
+        f"{PANDASCORE_BASE}/matches/past",
+        params={"filter[opponent_id]": team_id, "per_page": last_n, "sort": "-end_at"}
+    )
+    if not r or not r.ok:
+        return {"winrate": 0.5, "winrate_last5": 0.5, "winrate_old": 0.5,
+                "form": "?????", "matches": 0, "wins": 0, "losses": 0}
+
+    results = []
+    for m in r.json():
+        if m.get("status") != "finished":
+            continue
+        winner_id = m.get("winner_id")
+        if winner_id is not None:
+            results.append(winner_id == team_id)
+
+    if not results:
+        return {"winrate": 0.5, "winrate_last5": 0.5, "winrate_old": 0.5,
+                "form": "?????", "matches": 0, "wins": 0, "losses": 0}
+
+    wins   = sum(results)
+    losses = len(results) - wins
+    form   = "".join("W" if r else "L" for r in results[:5])
+
+    # Взвешенный WR: последние 5 × 0.60 + остальные × 0.40
+    last5  = results[:5]
+    older  = results[5:]
+    wr5    = sum(last5) / len(last5)   if last5  else 0.5
+    wr_old = sum(older) / len(older)   if older  else wr5
+    wr_weighted = wr5 * 0.60 + wr_old * 0.40
+
+    return {
+        "winrate":       round(wr_weighted, 3),
+        "winrate_last5": round(wr5, 3),
+        "winrate_old":   round(wr_old, 3),
+        "form":          form,
+        "wins":          wins,
+        "losses":        losses,
+        "matches":       len(results),
+    }
+
+
+# ─── Stand-in детектор ───────────────────────────────────────────────────────
+
+# Известные основные составы (топ-15 команд, 5 игроков)
+_KNOWN_ROSTERS: dict = {
+    "Team Vitality":  {"ZywOo", "apEX", "flameZ", "mezii", "Spinx"},
+    "Team Spirit":    {"donk", "chopper", "magixx", "zont1x", "sh1ro"},
+    "Natus Vincere":  {"b1t", "iM", "jL", "w0nderful", "npl"},
+    "FaZe Clan":      {"karrigan", "rain", "broky", "ropz", "frozen"},
+    "G2 Esports":     {"NiKo", "huNter-", "nexa", "jks", "malbsMd"},
+    "MOUZ":           {"torzsi", "xertioN", "JDC", "siuhy", "Brollan"},
+    "Heroic":         {"cadiaN", "TeSeS", "jabbi", "stavn", "sjuush"},
+    "Team Liquid":    {"NAF", "EliGE", "YEKINDAR", "nitr0", "oSee"},
+    "Cloud9":         {"Ax1Le", "HObbit", "Perfecto", "fame", "ICY"},
+    "Astralis":       {"device", "blameF", "Lucky", "Buzz", "br0"},
+    "ENCE":           {"Snappi", "dycha", "gla1ve", "SunPayus", "NertZ"},
+    "FURIA":          {"KSCERATO", "yuurih", "arT", "FalleN", "skullz"},
+    "BIG":            {"tabseN", "faveN", "Krimbo", "syrsoN", "prosus"},
+}
+
+def check_stand_in(team_name: str) -> dict:
+    """
+    Проверяет текущий состав через PandaScore API.
+    Возвращает {"has_standin": bool, "standin_player": str, "missing_player": str}
+    """
+    known = _KNOWN_ROSTERS.get(team_name)
+    if not known:
+        return {"has_standin": False, "standin_player": "", "missing_player": ""}
+
+    team_id = get_team_id(team_name)
+    if not team_id:
+        return {"has_standin": False, "standin_player": "", "missing_player": ""}
+
+    r = _request_with_retry(f"{PANDASCORE_BASE}/teams/{team_id}")
+    if not r or not r.ok:
+        return {"has_standin": False, "standin_player": "", "missing_player": ""}
+
+    try:
+        data = r.json()
+        current_players = {
+            p.get("name", "") for p in data.get("players", [])
+            if p.get("role", "") not in ("coach", "analyst")
+        }
+        if not current_players:
+            return {"has_standin": False, "standin_player": "", "missing_player": ""}
+
+        # Игроки из известного состава которых нет сейчас
+        missing = known - current_players
+        # Игроки текущего состава которых нет в известном
+        added   = current_players - known
+
+        if missing and added:
+            return {
+                "has_standin": True,
+                "standin_player": next(iter(added)),
+                "missing_player":  next(iter(missing)),
+            }
+    except Exception:
+        pass
+
+    return {"has_standin": False, "standin_player": "", "missing_player": ""}

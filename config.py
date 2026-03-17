@@ -17,6 +17,7 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 API_FOOTBALL_KEY = os.getenv('API_FOOTBALL_KEY', '')
 RAPID_API_KEY = os.getenv('RAPID_API_KEY', '')
 PANDASCORE_API_KEY = os.getenv('PANDASCORE_API_KEY', '')
+API_TENNIS_KEY = os.getenv('API_TENNIS_KEY', '')
 
 # Проверка при запуске
 if not TELEGRAM_TOKEN:

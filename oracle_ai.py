@@ -6,13 +6,20 @@
 """
 
 import json
+import re
 from gnews import GNews
 from transformers import pipeline
 import warnings
 warnings.filterwarnings("ignore")
 
+try:
+    import feedparser
+    _FEEDPARSER_OK = True
+except ImportError:
+    _FEEDPARSER_OK = False
+
 # Загружаем модель для анализа тональности (один раз при старте)
-print("Загрузка модели анализа тональности (может занять несколько секунд)...")
+print("[oracle_ai] Loading sentiment model...")
 try:
     sentiment_analyzer = pipeline(
         "sentiment-analysis",
@@ -20,23 +27,111 @@ try:
         truncation=True,
         max_length=512
     )
-    print("Модель тональности загружена.")
+    print("[oracle_ai] Sentiment model loaded.")
 except Exception as e:
-    print(f"Ошибка загрузки модели: {e}")
+    print(f"[oracle_ai] Model load error: {e}")
     sentiment_analyzer = None
+
+
+# RSS источники: надёжные футбольные новости
+_RSS_FEEDS = [
+    "https://feeds.bbci.co.uk/sport/football/rss.xml",          # BBC Sport Football
+    "https://www.skysports.com/rss/12040",                       # Sky Sports Football
+    "https://www.theguardian.com/football/rss",                  # The Guardian Football
+    "https://www.espn.com/espn/rss/soccer/news",                 # ESPN Soccer
+]
+
+_rss_cache: dict = {}   # {feed_url: [articles]}
+
+
+def _get_rss_articles(team_name: str) -> list:
+    """Ищет упоминания команды в RSS лентах. Возвращает список заголовков."""
+    if not _FEEDPARSER_OK:
+        return []
+    results = []
+    team_lower = team_name.lower()
+    # Сокращённые имена для поиска в RSS
+    short_names = [team_lower]
+    if " " in team_lower:
+        short_names.append(team_lower.split()[0])  # первое слово
+        short_names.append(team_lower.split()[-1]) # последнее слово
+
+    for feed_url in _RSS_FEEDS:
+        try:
+            if feed_url not in _rss_cache:
+                feed = feedparser.parse(feed_url)
+                _rss_cache[feed_url] = feed.entries[:40]
+            for entry in _rss_cache[feed_url]:
+                title = entry.get("title", "")
+                summary = entry.get("summary", "")
+                text = (title + " " + summary).lower()
+                if any(sn in text for sn in short_names):
+                    results.append({
+                        "title": title,
+                        "publisher": {"title": feed_url.split("/")[2]},
+                    })
+        except Exception:
+            continue
+    return results[:8]
 
 
 def get_team_news(team_name, max_results=10):
     """
-    Получает новости для конкретной команды через Google News.
+    Получает новости для команды из нескольких источников:
+    1. RSS: BBC Sport, Sky Sports, Guardian, ESPN (быстро, надёжно)
+    2. Google News как резервный источник
     """
-    try:
-        google_news = GNews(language='en', country='US', max_results=max_results)
-        news = google_news.get_news(f"{team_name} football")
-        return news if news else []
-    except Exception as e:
-        print(f"  [Оракул] Ошибка получения новостей для '{team_name}': {e}")
-        return []
+    articles = []
+
+    # Источник 1: RSS (быстро, без лимитов)
+    rss_articles = _get_rss_articles(team_name)
+    articles.extend(rss_articles)
+
+    # Источник 2: Google News (если RSS дал мало)
+    if len(articles) < 5:
+        try:
+            google_news = GNews(language='en', country='US', max_results=max_results)
+            gnews = google_news.get_news(f"{team_name} football")
+            articles.extend(gnews or [])
+        except Exception as e:
+            print(f"  [Оракул] Google News ошибка для '{team_name}': {e}")
+
+    return articles[:max_results]
+
+
+def get_team_injuries_rss(team_name: str) -> list:
+    """
+    Ищет новости о травмах через RSS + Google News.
+    Возвращает список заголовков с ключевыми словами травм.
+    """
+    injury_keywords = ["injury", "injured", "doubt", "miss", "suspension",
+                       "suspended", "out", "ruled out", "fitness", "травм"]
+    results = []
+    team_lower = team_name.lower()
+
+    # RSS scan
+    for feed_url in _RSS_FEEDS:
+        try:
+            if feed_url not in _rss_cache:
+                feed = feedparser.parse(feed_url)
+                _rss_cache[feed_url] = feed.entries[:40]
+            for entry in _rss_cache[feed_url]:
+                title = (entry.get("title", "") + " " + entry.get("summary", "")).lower()
+                if team_lower.split()[0] in title and any(kw in title for kw in injury_keywords):
+                    results.append(entry.get("title", ""))
+        except Exception:
+            continue
+
+    # Google News для травм
+    if len(results) < 3 and _FEEDPARSER_OK is not None:
+        try:
+            gn = GNews(language='en', country='US', max_results=5)
+            inj_news = gn.get_news(f"{team_name} injury suspension miss")
+            results.extend([a.get("title", "") for a in (inj_news or [])])
+        except Exception:
+            pass
+
+    return results[:5]
 
 
 def analyze_sentiment(text):
@@ -107,11 +202,17 @@ def oracle_analyze(home_team, away_team):
         else:
             verdict = 'нейтральный'
 
+        # Травмы из RSS
+        injury_news = get_team_injuries_rss(team)
+        injury_flag = len(injury_news) > 0
+
         results[team] = {
             'sentiment_score': avg_sentiment,
             'news_count': len(articles_summary),
             'verdict': verdict,
-            'articles': articles_summary[:5]  # Сохраняем только топ-5 для отчета
+            'articles': articles_summary[:5],
+            'injury_news': injury_news,
+            'has_injuries': injury_flag,
         }
 
         print(f"  [Оракул] {team}: {len(articles_summary)} новостей, "
@@ -159,6 +260,14 @@ def format_oracle_report(home_team, away_team, analysis_results):
         report += f"   Новостной фон благоприятнее для {away_team} ({diff:.4f})\n"
     else:
         report += f"   Новостной фон примерно одинаков для обеих команд.\n"
+
+    # Травмы
+    for team, data in [(home_team, home_data), (away_team, away_data)]:
+        inj = data.get("injury_news", [])
+        if inj:
+            report += f"\n🚑 Травмы/сомнения {team}:\n"
+            for headline in inj[:3]:
+                report += f"   • {headline}\n"
 
     return report
 

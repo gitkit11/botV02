@@ -55,7 +55,7 @@ def _get_all_teams_xg(season='2024'):
         return {}
 
 
-def get_team_xg_stats(team_name: str, season: str = '2024') -> dict | None:
+def get_team_xg_stats(team_name: str, season: str = '2025') -> dict | None:
     """
     Получить xG статистику для команды.
     Возвращает словарь с ключами:
@@ -156,7 +156,7 @@ def get_team_xg_stats(team_name: str, season: str = '2024') -> dict | None:
         return None
 
 
-def get_xg_with_fallback(team_name: str, is_home: bool = True, season: str = '2024') -> dict | None:
+def get_xg_with_fallback(team_name: str, is_home: bool = True, season: str = '2025') -> dict | None:
     """
     Получает xG статистику с fallback на api_football.py если Understat недоступен.
     Возвращает словарь в формате get_team_xg_stats() или None.
@@ -199,7 +199,7 @@ def get_xg_with_fallback(team_name: str, is_home: bool = True, season: str = '20
     return None  # Пуассон будет использовать дефолт 1.35/1.10
 
 
-def format_xg_stats(home_team: str, away_team: str, season: str = '2024') -> str:
+def format_xg_stats(home_team: str, away_team: str, season: str = '2025') -> str:
     """
     Форматирует xG статистику для двух команд в текстовый блок для AI агентов.
     """

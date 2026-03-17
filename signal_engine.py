@@ -9,32 +9,9 @@ signal_engine.py — Движок сигналов CHIMERA AI v2
 """
 
 from typing import Optional, List, Dict
+from config_thresholds import FOOTBALL_CFG, CS2_CFG, BASKETBALL_CFG
 
-# ─── Пороги ──────────────────────────────────────────────────────────────────
-
-FOOTBALL_CFG = {
-    "min_prob":     0.55,   # Вероятность минимум 55%
-    "min_ev":       0.07,   # EV минимум 7%
-    "min_odds":     1.45,   # Не брать очевидных фаворитов
-    "max_odds":     4.00,
-    "min_form_wins": 3,     # Минимум 3 победы из последних 5
-    "min_elo_gap":  40,     # Разница ELO минимум 40 очков
-    "min_score":    4,      # Минимум 4 балла из 6 для сигнала
-}
-
-CS2_CFG = {
-    "min_prob":             0.55,
-    "min_ev":               0.07,
-    "min_odds":             1.45,
-    "max_odds":             3.50,
-    "min_form_wins":        3,
-    "min_elo_gap":          30,
-    "min_mis_gap":          0.03,   # Преимущество по картам минимум 3%
-    "min_rating_gap":       0.06,   # Разница рейтингов игроков (средний рейтинг команды)
-    "min_map_advantage":    0.10,   # Мин. преимущество на картах (в %)
-    "min_key_player_advantage": 0.15, # Мин. преимущество ключевых игроков (в %)
-    "min_score":            6,      # Минимум 6 баллов из 10 для сигнала
-}
+# Пороги импортированы из config_thresholds.py — редактируй там, не здесь.
 
 
 # ─── Вспомогательные функции ─────────────────────────────────────────────────
@@ -79,6 +56,7 @@ def check_football_signal(
     elo_home: float = 0,
     elo_away: float = 0,
     ai_agrees: Optional[bool] = None,
+    ensemble_prob: Optional[float] = None,
 ) -> list[dict]:
     c = FOOTBALL_CFG
     signals = []
@@ -93,7 +71,8 @@ def check_football_signal(
         if odds <= 1.0 or prob <= 0:
             continue
 
-        ev = _calc_ev(prob, odds)
+        ev_prob = ensemble_prob if ensemble_prob is not None else prob
+        ev = _calc_ev(ev_prob, odds)
         score = 0
         checks = []
 
@@ -150,8 +129,8 @@ def check_football_signal(
 
         max_score = 5 if outcome == "Х" else 6  # без формы для ничьей
 
-        if score >= c["min_score"] and ev > 0:
-            signals.append({
+        if score >= c["min_score"]:
+            sig = {
                 "sport": "football",
                 "home": home_team,
                 "away": away_team,
@@ -160,12 +139,15 @@ def check_football_signal(
                 "odds": odds,
                 "prob": round(prob * 100, 1),
                 "ev": round(ev * 100, 1),
-                "kelly": _kelly(prob, odds),
+                "kelly": _kelly(ev_prob, odds),
                 "score": score,
                 "max_score": max_score,
                 "strength": _strength(score, max_score, ev),
                 "checks": checks,
-            })
+            }
+            if ensemble_prob is not None:
+                sig["ai_source"] = "ensemble"
+            signals.append(sig)
 
     return signals
 
@@ -309,7 +291,7 @@ def check_cs2_signal(
 
         max_score = 10
 
-        if score >= c["min_score"] and ev > 0:
+        if score >= c["min_score"]:
             signals.append({
                 "sport": "cs2",
                 "home": home_team,
@@ -340,7 +322,7 @@ def format_signal(sig: dict) -> str:
         f"📊 Вероятность: {sig['prob']}%",
         f"📈 Коэффициент: {sig['odds']}",
         f"💰 Ценность (EV): +{sig['ev']}%",
-        f"⚖️ Рекомендуемая ставка: {sig['kelly']}%",
+        f"⚖️ Ставка: {sig['kelly']}% банка ({('3u' if sig['kelly'] >= 4 else '2u' if sig['kelly'] >= 2 else '1u')})",
         "",
         f"📝 <b>Анализ ({sig['score']}/{sig['max_score']} баллов):</b>"
     ]
@@ -350,6 +332,258 @@ def format_signal(sig: dict) -> str:
         
     text.append("\n#ChimeraAI #Прогноз")
     return "\n".join(text)
+
+def predict_cs2_totals(
+    home_prob: float,
+    away_prob: float,
+    home_map_stats: Dict[str, float] = None,
+    away_map_stats: Dict[str, float] = None,
+    predicted_maps: List[str] = None,
+) -> dict:
+    """
+    Предсказывает тотал карт в BO3 (over/under 2.5).
+
+    Логика:
+    - Большой разрыв вероятностей → фаворит сметёт 2:0 → UNDER 2.5
+    - Примерно равные команды → затяжная серия 2:1 → OVER 2.5
+    - Учёт карт: если обе команды имеют свою сильную карту в пуле → OVER
+
+    Реальная статистика CS2 BO3:
+    - При разнице вероятностей 20%+: 2:0 случается ~55-65% матчей
+    - При примерно равных командах: 2:1 случается ~60% матчей
+    """
+    stronger_prob = max(home_prob, away_prob)
+
+    # Базовая вероятность UNDER 2.5 (2:0)
+    # stronger_prob=0.50 → p_under≈0.28 (равные команды почти никогда 2:0)
+    # stronger_prob=0.65 → p_under≈0.47
+    # stronger_prob=0.70 → p_under≈0.55
+    # stronger_prob=0.80 → p_under≈0.68
+    p_under = 0.28 + (stronger_prob - 0.50) * 1.60
+    p_under = max(0.20, min(0.78, p_under))
+
+    # Коррекция по картам: если обе команды сильны на разных картах → OVER
+    map_diversity = 0.0
+    if home_map_stats and away_map_stats and predicted_maps:
+        for m in predicted_maps:
+            h_wr = home_map_stats.get(m, 50.0) / 100.0
+            a_wr = away_map_stats.get(m, 50.0) / 100.0
+            # Карта спорная (<10% разрыв) → обе равны → склоняется к OVER
+            if abs(h_wr - a_wr) < 0.10:
+                map_diversity += 0.05
+            # Карта явно принадлежит одной команде (>20%) → склоняется к UNDER
+            elif abs(h_wr - a_wr) > 0.20:
+                map_diversity -= 0.03
+        p_under -= map_diversity
+
+    p_under = max(0.20, min(0.78, p_under))
+    p_over  = 1.0 - p_under
+    is_under = p_under > p_over
+
+    # Причина
+    gap_pct = int((stronger_prob - 0.50) * 200)
+    if is_under and gap_pct >= 30:
+        reason = f"Явный фаворит (разрыв +{gap_pct}%) — скорее всего зачистка 2:0"
+    elif is_under:
+        reason = f"Небольшое преимущество фаворита — возможен 2:0"
+    elif map_diversity > 0.05:
+        reason = "Обе команды сильны на своих картах — ожидается 2:1"
+    else:
+        reason = "Равные команды — серия скорее всего затянется до 3-й карты"
+
+    return {
+        "prediction":   "UNDER 2.5" if is_under else "OVER 2.5",
+        "under_prob":   round(p_under, 2),
+        "over_prob":    round(p_over,  2),
+        "confidence":   round(max(p_under, p_over) * 100),
+        "reason":       reason,
+    }
+
+
+def predict_cs2_round_totals(
+    home_prob: float,
+    away_prob: float,
+    home_map_stats: Dict[str, float] = None,
+    away_map_stats: Dict[str, float] = None,
+    predicted_maps: List[str] = None,
+    match_format: str = "best_of_3",
+) -> dict:
+    """
+    Предсказывает тотал раундов/карт для CS2.
+
+    Для BO3:
+    - Тотал карт: OVER/UNDER 2.5 (3 карты = OVER, 2 карты = UNDER)
+    - Тотал раундов первой карты: OVER/UNDER 25.5 (стандартный рынок)
+
+    Статистика: в среднем ~26-27 раундов на карту в профессиональном CS2.
+    Команды с высоким eco-винрейтом → UNDER (доминируют экономику → короткие карты).
+    Равные команды → OVER (много overtime-раундов).
+    """
+    stronger_prob = max(home_prob, away_prob)
+    weaker_prob   = min(home_prob, away_prob)
+    gap = stronger_prob - weaker_prob
+
+    # ── Тотал раундов на карте OVER/UNDER 25.5 ────────────────────────────────
+    # gap=0 (50/50) → много раундов, gap=0.30+ → доминация, мало раундов
+    # Базовая вероятность что карта будет SHORT (< 25.5 раундов)
+    # Реальная статистика: ~40% карт заканчиваются 16:8 или быстрее (под 25.5)
+    p_rounds_under = 0.35 + gap * 0.80
+    p_rounds_under = max(0.22, min(0.72, p_rounds_under))
+
+    # Коррекция по картам: если первая карта спорная (обе команды ≥50% WR) → OVER
+    first_map_adjustment = 0.0
+    if home_map_stats and away_map_stats and predicted_maps:
+        first_map = predicted_maps[0] if predicted_maps else None
+        if first_map:
+            h_wr = home_map_stats.get(first_map, 50.0) / 100.0
+            a_wr = away_map_stats.get(first_map, 50.0) / 100.0
+            if h_wr >= 0.50 and a_wr >= 0.50:
+                first_map_adjustment = -0.06  # обе сильны → OVER раундов
+            elif abs(h_wr - a_wr) > 0.25:
+                first_map_adjustment = +0.05  # один явно сильнее → UNDER
+
+    p_rounds_under += first_map_adjustment
+    p_rounds_under = max(0.22, min(0.72, p_rounds_under))
+    p_rounds_over  = 1.0 - p_rounds_under
+    rounds_pred    = "UNDER 25.5" if p_rounds_under > p_rounds_over else "OVER 25.5"
+
+    # ── Тотал карт OVER/UNDER 2.5 (из predict_cs2_totals — переиспользуем) ──
+    p_maps_under = 0.28 + (stronger_prob - 0.50) * 1.60
+    p_maps_under = max(0.20, min(0.78, p_maps_under))
+    if home_map_stats and away_map_stats and predicted_maps:
+        map_diversity = 0.0
+        for m in predicted_maps:
+            h_wr = home_map_stats.get(m, 50.0) / 100.0
+            a_wr = away_map_stats.get(m, 50.0) / 100.0
+            if abs(h_wr - a_wr) < 0.10:
+                map_diversity += 0.05
+            elif abs(h_wr - a_wr) > 0.20:
+                map_diversity -= 0.03
+        p_maps_under -= map_diversity
+        p_maps_under = max(0.20, min(0.78, p_maps_under))
+
+    p_maps_over  = 1.0 - p_maps_under
+    maps_pred    = "UNDER 2.5 карты" if p_maps_under > p_maps_over else "OVER 2.5 карты"
+
+    # Причина
+    if gap >= 0.25:
+        rounds_reason = f"Явный фаворит (разрыв {int(gap*100)}%) — ожидается быстрая карта"
+    elif p_rounds_over > p_rounds_under:
+        rounds_reason = "Равные команды — ожидается много раундов, возможен overtime"
+    else:
+        rounds_reason = f"Небольшое преимущество — карта может быть короткой"
+
+    return {
+        # Тотал карт (BO3)
+        "maps_prediction":    maps_pred,
+        "maps_under_prob":    round(p_maps_under, 2),
+        "maps_over_prob":     round(p_maps_over, 2),
+        "maps_confidence":    round(max(p_maps_under, p_maps_over) * 100),
+        # Тотал раундов (первая карта)
+        "rounds_prediction":  rounds_pred,
+        "rounds_under_prob":  round(p_rounds_under, 2),
+        "rounds_over_prob":   round(p_rounds_over, 2),
+        "rounds_confidence":  round(max(p_rounds_under, p_rounds_over) * 100),
+        "rounds_reason":      rounds_reason,
+    }
+
+
+def get_cs2_ranked_bets(
+    home_team: str,
+    away_team: str,
+    home_prob: float,
+    away_prob: float,
+    bookmaker_odds: dict,
+    totals_data: dict = None,
+    home_form: str = "",
+    away_form: str = "",
+) -> list:
+    """
+    Возвращает список ставок, отсортированных по ожидаемой ценности (EV).
+
+    Типы ставок:
+    1. П1 / П2 — победитель матча (из bookmaker_odds)
+    2. Тотал < 2.5 / > 2.5 — количество карт (типичный кэф ~1.85)
+    3. Фора -1.5 / +1.5 — для явных фаворитов/аутсайдеров (типичный кэф ~2.0 / ~1.40)
+
+    Кэфы на тотал и фору берутся из bookmaker_odds если есть, иначе оценочные.
+    """
+    bets = []
+
+    h_odds = bookmaker_odds.get("home_win", 0)
+    a_odds = bookmaker_odds.get("away_win", 0)
+
+    # ── 1. Победитель ────────────────────────────────────────────────────────
+    for prob, odds, team, outcome in [
+        (home_prob, h_odds, home_team, "П1"),
+        (away_prob, a_odds, away_team, "П2"),
+    ]:
+        if odds > 1.0:
+            ev = prob * odds - 1
+            kelly = _kelly(prob, odds)
+            if ev > 0.03:
+                bets.append({
+                    "type":     outcome,
+                    "label":    f"{team} победит",
+                    "prob":     round(prob * 100, 1),
+                    "odds":     odds,
+                    "ev":       round(ev * 100, 1),
+                    "kelly":    kelly,
+                    "priority": ev * prob,
+                    "note":     "",
+                })
+
+    # ── 2. Тотал карт ────────────────────────────────────────────────────────
+    if totals_data:
+        pred = totals_data["prediction"]
+        is_under = "UNDER" in pred
+        total_prob = totals_data["under_prob"] if is_under else totals_data["over_prob"]
+        # Используем кэф из bookmaker_odds если есть, иначе типичный 1.85
+        if is_under:
+            total_odds = bookmaker_odds.get("under_2_5", bookmaker_odds.get("total_under", 1.85))
+        else:
+            total_odds = bookmaker_odds.get("over_2_5", bookmaker_odds.get("total_over", 1.85))
+
+        ev = total_prob * total_odds - 1
+        kelly = _kelly(total_prob, total_odds)
+        if ev > 0.02:
+            label = f"Тотал карт Меньше 2.5 (завершится 2:0)" if is_under else f"Тотал карт Больше 2.5 (завершится 2:1)"
+            bets.append({
+                "type":     pred,
+                "label":    label,
+                "prob":     round(total_prob * 100, 1),
+                "odds":     total_odds,
+                "ev":       round(ev * 100, 1),
+                "kelly":    kelly,
+                "priority": ev * total_prob,
+                "note":     totals_data.get("reason", ""),
+            })
+
+    # ── 3. Фора -1.5 для явного фаворита ─────────────────────────────────────
+    # Фора -1.5 выигрывает только при 2:0. P(2:0) ≈ p_under (если фаворит)
+    stronger_team  = home_team  if home_prob >= away_prob else away_team
+    stronger_prob2 = max(home_prob, away_prob)
+    if stronger_prob2 >= 0.65 and totals_data:
+        hc_prob = totals_data["under_prob"]  # вероятность 2:0 ≈ вероятность UNDER
+        hc_odds = bookmaker_odds.get("handicap_minus", 2.05)  # типичный кэф фора -1.5
+        ev = hc_prob * hc_odds - 1
+        kelly = _kelly(hc_prob, hc_odds)
+        if ev > 0.04:
+            bets.append({
+                "type":     "Фора -1.5",
+                "label":    f"{stronger_team} с форой -1.5 (победа 2:0)",
+                "prob":     round(hc_prob * 100, 1),
+                "odds":     hc_odds,
+                "ev":       round(ev * 100, 1),
+                "kelly":    kelly,
+                "priority": ev * hc_prob * 0.9,  # слегка ниже приоритет чем прямая
+                "note":     "Требует победы всухую, проверь кэф на своём БК",
+            })
+
+    # Сортируем по EV * вероятность (ожидаемая прибыль)
+    bets.sort(key=lambda x: x["priority"], reverse=True)
+    return bets
+
 
 def format_signals_list(signals: list[dict]) -> str:
     """Форматирует список сигналов в красивый текст для Telegram."""

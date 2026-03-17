@@ -14,3 +14,11 @@ maestro_result.json
 .env
 scripts/node_modules/
 chimera_predictions.db
+node_modules/
+logs/
+.claude/
+odds_snapshots.json
+elo_ratings.json
+elo_basketball.json
+elo_cs2.json
+team_form.json

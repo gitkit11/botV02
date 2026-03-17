@@ -101,7 +101,9 @@ def _call_ai(prompt, client, model, system_msg=None, retries=2):
 
 
 def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
-                           agent_type="gpt-4o", home_stats=None, away_stats=None, h2h=None):
+                           agent_type="gpt-4o", home_stats=None, away_stats=None, h2h=None,
+                           tournament_context: dict = None,
+                           home_standin: dict = None, away_standin: dict = None):
     """
     Запускает AI-агента для анализа матча CS2.
 
@@ -111,18 +113,33 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
     """
     home_odds = bookmaker_odds.get("home_win", 1.90)
     away_odds = bookmaker_odds.get("away_win", 1.90)
+    ctx = tournament_context or {"type": "online", "tier": "B", "label": "Online"}
+
+    # ── Блок 0: Контекст турнира ─────────────────────────────────────────────
+    ctx_block = f"\nФОРМАТ: {ctx.get('label','Online')} | Тир: {ctx.get('tier','B')}"
+    is_lan = ctx.get("type") in ("major", "lan_s", "lan_a")
+    ctx_block += f"\nMEDIUM: {'🎯 LAN — давление, публика, лучший интернет' if is_lan else '💻 Online — меньше нервов, привычная обстановка'}"
+
+    # ── Stand-in блок ────────────────────────────────────────────────────────
+    standin_block = ""
+    if home_standin and home_standin.get("has_standin"):
+        standin_block += f"\n⚠️ STAND-IN {home_team}: {home_standin['standin_player']} заменяет {home_standin['missing_player']} — учти в прогнозе!"
+    if away_standin and away_standin.get("has_standin"):
+        standin_block += f"\n⚠️ STAND-IN {away_team}: {away_standin['standin_player']} заменяет {away_standin['missing_player']} — учти в прогнозе!"
 
     # ── Блок 1: Статистика матчей (PandaScore) ──────────────────────────────
     stats_block = ""
     if home_stats and home_stats.get("matches", 0) > 0:
-        stats_block += f"\n📊 Статистика матчей (PandaScore, последние 20):"
-        stats_block += f"\n  {home_team}: {home_stats['wins']}В/{home_stats['losses']}П, WR={int(home_stats['winrate']*100)}%, форма: {home_stats['form']}"
+        wr5_h = int(home_stats.get("winrate_last5", home_stats["winrate"]) * 100)
+        stats_block += f"\n📊 Статистика матчей:"
+        stats_block += f"\n  {home_team}: WR={int(home_stats['winrate']*100)}%, last5={wr5_h}%, форма: {home_stats['form']}"
     if away_stats and away_stats.get("matches", 0) > 0:
+        wr5_a = int(away_stats.get("winrate_last5", away_stats["winrate"]) * 100)
         if not stats_block:
-            stats_block += f"\n📊 Статистика матчей (PandaScore, последние 20):"
-        stats_block += f"\n  {away_team}: {away_stats['wins']}В/{away_stats['losses']}П, WR={int(away_stats['winrate']*100)}%, форма: {away_stats['form']}"
+            stats_block += f"\n📊 Статистика матчей:"
+        stats_block += f"\n  {away_team}: WR={int(away_stats['winrate']*100)}%, last5={wr5_a}%, форма: {away_stats['form']}"
     if h2h and h2h.get("total", 0) >= 2:
-        stats_block += f"\n  Личные встречи: {home_team} {h2h['team1_wins']}:{h2h['team2_wins']} {away_team} (из {h2h['total']} матчей)"
+        stats_block += f"\n  H2H: {home_team} {h2h['team1_wins']}:{h2h['team2_wins']} {away_team} (из {h2h['total']} матчей)"
 
     # ── Блок 2: Статистика карт и игроков (HLTV) ────────────────────────────
     hltv_block = ""
@@ -140,35 +157,51 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
 
     # ── Промпты для агентов ──────────────────────────────────────────────────
     if agent_type == "gpt-4o":
-        prompt = f"""Матч CS2: {home_team} vs {away_team}
-Коэффициенты: {home_team}={home_odds} | {away_team}={away_odds}
+        prompt = f"""Ты — профессиональный аналитик CS2 для беттинга. Анализируй строго и честно.
+
+МАТЧ: {home_team} vs {away_team}
+КЭФЫ: {home_team}={home_odds} | {away_team}={away_odds}{ctx_block}{standin_block}
 {stats_block}
 {hltv_block}
 
-Как стратег — оцени:
-1. Кто фаворит и почему (форма, WR, сильные карты, ключевые игроки)
-2. Прогноз счёта серии (2:0, 2:1)
-3. Есть ли value bet? Если да — на что конкретно?
-4. Уверенность в прогнозе (%)
+Дай структурированный анализ:
 
-Ответ краткий, 4-5 предложений."""
+**ФАВОРИТ:** [команда] — [главная причина в 1 предложении]
+
+**КАРТЫ:** На каких картах каждая команда сильнее? Кто выиграет пике?
+
+**КЛЮЧЕВЫЕ ИГРОКИ:** Чей стар-плеер в лучшей форме? Кто может стать MVP?
+
+**ПРОГНОЗ:** [команда] победит [2:0 / 2:1] с вероятностью [X%]
+
+**ТОТАЛ:** Тотал карт [Меньше 2.5 / Больше 2.5] — [почему]
+
+**СТАВКА:** [СТАВИТЬ на X @ кэф Y / ПРОПУСТИТЬ] — причина в 1 предложении
+
+Будь конкретным. Не пиши воду."""
         client = _gpt_client
         model = "gpt-4.1-mini"
 
     else:
-        # llama-3.3 — тактический анализ
-        prompt = f"""Матч CS2: {home_team} vs {away_team}
-Коэффициенты: {home_team}={home_odds} | {away_team}={away_odds}
+        # llama-3.3 — независимый тактический анализ
+        prompt = f"""Ты — тактический аналитик CS2, независимый от GPT. Смотри на данные критически.
+
+МАТЧ: {home_team} vs {away_team}
+КЭФЫ: {home_team}={home_odds} | {away_team}={away_odds}{ctx_block}{standin_block}
 {stats_block}
 {hltv_block}
 
-Как тактик — оцени:
-1. Мап-вето: какие карты выберут/забанят команды (опираясь на winrate по картам)
-2. Ключевые игроки которые решат исход (AWPer, IGL, рейтинг)
-3. Твой прогноз на победителя
-4. Тотал карт: больше или меньше 2.5
+Оцени независимо:
 
-Ответ краткий, 4-5 предложений."""
+**ВЕТО:** Какие 2 карты заберут команды и почему? Кому выгоден децидер?
+
+**ТАКТИКА:** Агрессивный vs пассивный стиль — у кого преимущество на этом пуле карт?
+
+**РИСКИ:** Что может пойти не по плану для фаворита?
+
+**ИТОГ:** [команда] победит | Тотал карт: [больше/меньше] 2.5 | Уверенность: [X%]
+
+Если данных недостаточно для уверенного прогноза — скажи прямо."""
         client = _groq_client
         model = "llama-3.3-70b-versatile"
 
@@ -183,6 +216,58 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
             result = f"❌ Ошибка {model}: {str(e)[:100]}"
             
     return result
+
+
+def run_cs2_chimera_agents(
+    home_team: str, away_team: str,
+    math_probs: dict,
+    bookmaker_odds: dict,
+    home_stats=None, away_stats=None, h2h=None,
+    tournament_context: dict = None,
+    home_standin: dict = None, away_standin: dict = None,
+) -> dict:
+    """
+    Запускает CHIMERA Multi-Agent анализ для CS2 матча.
+    """
+    try:
+        from chimera_multi_agent import run_all_agents, bayesian_combine, format_verdict_block
+    except ImportError:
+        return {}
+
+    ctx = tournament_context or {"label": "Online", "tier": "B"}
+    standin_note = ""
+    if home_standin and home_standin.get("has_standin"):
+        standin_note += f"\n⚠️ STAND-IN {home_team}: {home_standin['standin_player']}"
+    if away_standin and away_standin.get("has_standin"):
+        standin_note += f"\n⚠️ STAND-IN {away_team}: {away_standin['standin_player']}"
+
+    stats_str = ""
+    if home_stats and home_stats.get("matches", 0) > 0:
+        stats_str += f"\n{home_team}: WR={int(home_stats['winrate']*100)}%, форма={home_stats['form']}"
+    if away_stats and away_stats.get("matches", 0) > 0:
+        stats_str += f"\n{away_team}: WR={int(away_stats['winrate']*100)}%, форма={away_stats['form']}"
+    if h2h and h2h.get("total", 0) >= 2:
+        stats_str += f"\nH2H: {home_team} {h2h['team1_wins']}:{h2h['team2_wins']} {away_team}"
+
+    match_info = (
+        f"МАТЧ CS2: {home_team} vs {away_team}\n"
+        f"ФОРМАТ: {ctx.get('label','Online')} | Тир: {ctx.get('tier','B')}\n"
+        f"КОЭФФИЦИЕНТЫ: {home_team}={bookmaker_odds.get('home_win',1.9)} | {away_team}={bookmaker_odds.get('away_win',1.9)}"
+        f"{standin_note}{stats_str}"
+    )
+
+    bm_probs = {"home": bookmaker_odds.get("home_win", 1.9), "away": bookmaker_odds.get("away_win", 1.9)}
+    favorite = home_team if math_probs.get("home", 0.5) >= math_probs.get("away", 0.5) else away_team
+
+    agent_results = run_all_agents("cs2", match_info, math_probs, bm_probs, favorite)
+    final_probs = bayesian_combine(math_probs, agent_results.get("statistician", ""), agent_results.get("skeptic", ""))
+    verdict_block = format_verdict_block(agent_results, final_probs, bm_probs, favorite)
+
+    return {
+        "agent_results": agent_results,
+        "final_probs": final_probs,
+        "verdict_block": verdict_block,
+    }
 
 
 def build_cs2_ensemble(math_prob, ai_probs, news_factor=1.0):
