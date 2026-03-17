@@ -69,7 +69,7 @@ except ImportError:
     UNDERSTAT_AVAILABLE = False
     def format_xg_stats(h, a, s='2025'): return ""
     def get_team_xg_stats(t, s='2025'): return None
-from database import init_db, save_prediction, get_statistics, get_pending_predictions, update_result, upsert_user, track_analysis, get_user_profile, get_user_language, set_user_language, set_user_bankroll, get_user_bankroll, get_pl_stats
+from database import init_db, save_prediction, get_statistics, get_pending_predictions, update_result, upsert_user, track_analysis, get_user_profile, get_user_language, set_user_language, set_user_bankroll, get_user_bankroll, get_pl_stats, mark_user_bet, get_user_pl_stats
 from i18n import t
 from meta_learner import MetaLearner
 try:
@@ -1367,6 +1367,11 @@ async def handle_text(message: types.Message):
     text = message.text
     user_id = message.from_user.id
 
+    # ── Ввод банка пользователя ───────────────────────────────────────────────
+    if user_id in _awaiting_bankroll:
+        await bankroll_input_handler(message)
+        return
+
     # ── Химера-чат: пользователь в режиме диалога ────────────────────────────
     MENU_BUTTONS = {
         "📡 Сигналы дня", "📡 Daily Signals",
@@ -1616,27 +1621,51 @@ async def handle_text(message: types.Message):
         bankroll = get_user_bankroll(message.from_user.id)
         if pl["total"] > 0:
             roi_sign = "+" if pl["roi"] >= 0 else ""
-            streak_line = f"🔥 Стрик: <b>{pl['current_streak']} побед подряд</b>\n" if pl["current_streak"] >= 2 else ""
-            if bankroll and bankroll > 0:
-                profit_money = round(bankroll * pl["profit_units"] / 100, 2)
-                money_sign = "+" if profit_money >= 0 else ""
-                money_line = f"  💵 Твой банк: <b>{bankroll:.0f}</b> → <b>{bankroll + profit_money:.0f}</b> ({money_sign}{profit_money:.0f})\n"
-            else:
-                money_line = f"  💼 <i>Укажи свой банк чтобы увидеть прибыль в деньгах</i>\n"
+            streak_line = f"  🔥 Стрик: <b>{pl['current_streak']} побед подряд</b>\n" if pl["current_streak"] >= 2 else ""
             pl_block = (
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📈 <b>Трекрекорд бота (30 дней)</b>\n"
+                f"📊 <b>Трекрекорд бота (30 дней)</b>\n"
                 f"  Сигналов СТАВИТЬ: <b>{pl['total']}</b>  ✅{pl['wins']} / ❌{pl['losses']}\n"
                 f"  ROI: <b>{roi_sign}{pl['roi']}%</b>   Профит: <b>{'+' if pl['profit_units']>=0 else ''}{pl['profit_units']}u</b>\n"
                 f"  Лучший стрик: <b>{pl['best_streak']}</b> побед\n"
                 f"{streak_line}"
-                f"{money_line}"
             )
         else:
             pl_block = (
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📈 <b>Трекрекорд бота</b>\n"
-                f"  <i>Пока нет завершённых сигналов. Данные появятся после первых матчей.</i>\n"
+                f"📊 <b>Трекрекорд бота</b>\n"
+                f"  <i>Пока нет завершённых сигналов.</i>\n"
+            )
+
+        # Личный P&L пользователя
+        upl = get_user_pl_stats(message.from_user.id, days=30)
+        if upl["total"] > 0 or upl.get("pending", 0) > 0:
+            u_roi_sign = "+" if upl["roi"] >= 0 else ""
+            u_streak = f"  🔥 Стрик: <b>{upl['current_streak']} побед подряд</b>\n" if upl["current_streak"] >= 2 else ""
+            pending_line = f"  ⏳ В ожидании: <b>{upl['pending']}</b> ставок\n" if upl.get("pending", 0) > 0 else ""
+            if bankroll and bankroll > 0 and upl["total"] > 0:
+                profit_money = round(bankroll * upl["profit_units"] / 100, 2)
+                money_sign = "+" if profit_money >= 0 else ""
+                money_line = f"  💵 Банк: <b>{bankroll:.0f}</b> → <b>{bankroll + profit_money:.0f}</b> ({money_sign}{profit_money:.0f})\n"
+            elif bankroll and bankroll > 0:
+                money_line = f"  💵 Банк: <b>{bankroll:.0f}</b>\n"
+            else:
+                money_line = f"  💼 <i>Укажи свой банк → увидишь прибыль в деньгах</i>\n"
+            upl_block = (
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📈 <b>Моя статистика (30 дней)</b>\n"
+                f"  <i>Только те ставки, что ты отметил кнопкой ✅</i>\n"
+                f"  Ставок: <b>{upl['total']}</b>  ✅{upl['wins']} / ❌{upl['losses']}\n"
+                f"  ROI: <b>{u_roi_sign}{upl['roi']}%</b>   Профит: <b>{'+' if upl['profit_units']>=0 else ''}{upl['profit_units']}u</b>\n"
+                f"{u_streak}"
+                f"{pending_line}"
+                f"{money_line}"
+            )
+        else:
+            upl_block = (
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📈 <b>Моя статистика</b>\n"
+                f"  <i>Нажимай ✅ под сигналом — и твои ставки будут здесь.</i>\n"
             )
 
         cab_text = (
@@ -1656,6 +1685,7 @@ async def handle_text(message: types.Message):
             f"  Всего:          <b>{total}</b>\n\n"
             f"❤️ Любимый спорт: <b>{fav}</b>\n\n"
             f"{pl_block}"
+            f"{upl_block}"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🐉 <b>Химера</b> — вопросов сегодня: <b>{q_line}</b>"
         )
@@ -1781,6 +1811,42 @@ async def chimera_ask_handler(call: types.CallbackQuery):
         "Задай свой вопрос. Я отвечу.",
         parse_mode="HTML"
     )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("mybet_"))
+async def mybet_handler(call: types.CallbackQuery):
+    """Пользователь нажал 'Я поставил' — записываем в личную статистику."""
+    parts = call.data.split("_")
+    # mybet_{sport}_{pred_id}_{odds*100}
+    if len(parts) < 3:
+        await call.answer("Ошибка: неверный формат.", show_alert=True)
+        return
+    sport = parts[1]
+    try:
+        pred_id = int(parts[2])
+        odds = int(parts[3]) / 100.0 if len(parts) >= 4 else 0.0
+    except (ValueError, IndexError):
+        await call.answer("Ошибка: неверный ID.", show_alert=True)
+        return
+
+    saved = mark_user_bet(call.from_user.id, sport, pred_id, odds)
+    if saved:
+        await call.answer("✅ Записано в твою статистику! Результат добавится автоматически после матча.", show_alert=True)
+        # Убираем кнопку из сообщения (заменяем на текст)
+        try:
+            orig_markup = call.message.reply_markup
+            if orig_markup:
+                new_rows = []
+                for row in orig_markup.inline_keyboard:
+                    new_row = [btn for btn in row if not btn.callback_data or not btn.callback_data.startswith("mybet_")]
+                    if new_row:
+                        new_rows.append(new_row)
+                new_markup = types.InlineKeyboardMarkup(inline_keyboard=new_rows) if new_rows else None
+                await call.message.edit_reply_markup(reply_markup=new_markup)
+        except Exception:
+            pass
+    else:
+        await call.answer("Ты уже записал эту ставку.", show_alert=True)
 
 
 @dp.callback_query()
@@ -1950,7 +2016,7 @@ async def handle_callback(call: types.CallbackQuery):
                 # Fallback: всегда заполняем recommended_outcome из ensemble
                 if not rec_outcome:
                     rec_outcome = "home_win" if analysis["home_prob"] >= analysis["away_prob"] else "away_win"
-                save_prediction(
+                _cs2_pred_id = save_prediction(
                     sport="cs2",
                     match_id=str(m.get("id", f"{home_team}_{away_team}")),
                     match_date=m.get("commence_time") or m.get("time", ""),
@@ -1978,6 +2044,7 @@ async def handle_callback(call: types.CallbackQuery):
                     }
                 )
             except Exception as save_err:
+                _cs2_pred_id = None
                 print(f"[CS2 Save] Ошибка сохранения прогноза: {save_err}")
             try:
                 upsert_user(call.from_user.id, call.from_user.username or "", call.from_user.first_name or "")
@@ -1991,6 +2058,13 @@ async def handle_callback(call: types.CallbackQuery):
             cs2_markets_kb.button(text="🎯 Тотал раундов", callback_data=f"cs2_mkt_rounds_{match_index}")
             cs2_markets_kb.button(text="⬅️ Матчи", callback_data="back_to_cs2")
             cs2_markets_kb.button(text="🏠 Меню", callback_data="back_to_main")
+            if signal_checks and _cs2_pred_id:
+                _cs2_bet_odds = odds.get("home_win" if rec_outcome == "home_win" else "away_win", 0) or 0
+                _cs2_odds_enc = int(round(_cs2_bet_odds * 100))
+                cs2_markets_kb.button(
+                    text="✅ Я поставил — записать в статистику",
+                    callback_data=f"mybet_cs2_{_cs2_pred_id}_{_cs2_odds_enc}"
+                )
             cs2_markets_kb.adjust(2)
             _cs2_kb = cs2_markets_kb.as_markup()
             await call.message.edit_text(report, parse_mode="Markdown", reply_markup=_cs2_kb)
@@ -2188,13 +2262,15 @@ async def handle_callback(call: types.CallbackQuery):
             try:
                 best = cands[0] if cands else None
                 rec = "home_win" if (best and best["outcome"] == "P1") else "away_win"
-                save_prediction(
+                _tennis_signal = "СТАВИТЬ" if cands else "ПРОПУСТИТЬ"
+                _tennis_pred_id = save_prediction(
                     sport="tennis",
                     match_id=m.get("event_id", f"{p1}_{p2}"),
                     match_date=m.get("commence_time", ""),
                     home_team=p1, away_team=p2,
                     league=sport_key,
                     recommended_outcome=rec,
+                    bet_signal=_tennis_signal,
                     ensemble_home=probs["p1_win"],
                     ensemble_away=probs["p2_win"],
                     ensemble_best_outcome=rec,
@@ -2202,6 +2278,7 @@ async def handle_callback(call: types.CallbackQuery):
                     bookmaker_odds_away=o2,
                 )
             except Exception as save_err:
+                _tennis_pred_id = None
                 print(f"[Tennis Save] {save_err}")
             try:
                 upsert_user(call.from_user.id, call.from_user.username or "", call.from_user.first_name or "")
@@ -2215,6 +2292,13 @@ async def handle_callback(call: types.CallbackQuery):
             tennis_kb.button(text="🏅 Победа в 1-м сете", callback_data=f"tennis_mkt_set1_{match_idx}")
             tennis_kb.button(text="⬅️ Матчи", callback_data=f"tennis_tour_{sport_key}")
             tennis_kb.button(text="🏠 Меню", callback_data="back_to_main")
+            if _tennis_signal == "СТАВИТЬ" and _tennis_pred_id:
+                _tn_bet_odds = o2 if rec == "away_win" else o1
+                _tn_odds_enc = int(round((_tn_bet_odds or 0) * 100))
+                tennis_kb.button(
+                    text="✅ Я поставил — записать в статистику",
+                    callback_data=f"mybet_tennis_{_tennis_pred_id}_{_tn_odds_enc}"
+                )
             tennis_kb.adjust(2)
             _tn_kb = tennis_kb.as_markup()
             await call.message.edit_text(report, parse_mode="HTML", reply_markup=_tn_kb)
@@ -4669,9 +4753,55 @@ async def cmd_signals(message: types.Message):
         print(f"[CHIMERA AI] Ошибка верификации: {e}")
 
     # ── Итоговый вывод ────────────────────────────────────────────────────
+    # Сохраняем топ-кандидатов в БД для трекинга результатов
+    _chimera_top_pred_id = None
+    _chimera_top_sport = "football"
+    _chimera_top_odds = 0
+    for _ci, _cand in enumerate(top_candidates[:3]):
+        try:
+            _c_sport = _cand.get("sport", "football")
+            _c_home  = _cand.get("home", "")
+            _c_away  = _cand.get("away", "")
+            _c_team  = _cand.get("team", "")
+            _c_odds  = _cand.get("odds", 0)
+            _c_time  = _cand.get("commence_time", "")
+            _c_rec   = "home_win" if _c_team == _c_home else "away_win"
+            _c_odds_h = _c_odds if _c_rec == "home_win" else 0
+            _c_odds_a = _c_odds if _c_rec == "away_win" else 0
+            _saved_id = save_prediction(
+                sport=_c_sport,
+                match_id=f"chimera_{_c_home}_{_c_away}_{_c_time[:10]}",
+                match_date=_c_time,
+                home_team=_c_home,
+                away_team=_c_away,
+                league=_cand.get("league_name", _c_sport),
+                recommended_outcome=_c_rec,
+                bet_signal="СТАВИТЬ",
+                bookmaker_odds_home=_c_odds_h if _c_odds_h > 1 else None,
+                bookmaker_odds_away=_c_odds_a if _c_odds_a > 1 else None,
+                ensemble_home=round(_cand.get("prob", 50) / 100, 3),
+                ensemble_away=round(1 - _cand.get("prob", 50) / 100, 3),
+                ensemble_best_outcome=_c_rec,
+            )
+            if _ci == 0:  # запоминаем только топ-1 для кнопки
+                _chimera_top_pred_id = _saved_id
+                _chimera_top_sport = _c_sport
+                _chimera_top_odds = _c_odds
+        except Exception as _cs_err:
+            print(f"[CHIMERA Save] {_cs_err}")
+
     try:
         result_text = format_chimera_signals(top_candidates, show_top=3)
-        await status_msg.edit_text(result_text, parse_mode="HTML")
+        _chimera_kb = None
+        if _chimera_top_pred_id:
+            _ch_odds_enc = int(round((_chimera_top_odds or 0) * 100))
+            _chimera_kb = types.InlineKeyboardMarkup(inline_keyboard=[[
+                types.InlineKeyboardButton(
+                    text="✅ Я поставил — записать в статистику",
+                    callback_data=f"mybet_{_chimera_top_sport}_{_chimera_top_pred_id}_{_ch_odds_enc}"
+                )
+            ]])
+        await status_msg.edit_text(result_text, parse_mode="HTML", reply_markup=_chimera_kb)
     except Exception as _fmt_e:
         logger.error(f"[CHIMERA] Ошибка отправки: {_fmt_e}")
         # Fallback — без AI-блока, только числа

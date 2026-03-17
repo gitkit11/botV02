@@ -102,6 +102,23 @@ def get_tennis_matches(sport_key: str = None) -> List[Dict]:
                 # Берём первого доступного букмекера
                 # Матчим по имени — outcomes могут быть не в порядке home/away
                 odds_p1 = odds_p2 = 0.0
+
+                def _name_matches(outcome_name: str, player_name: str) -> bool:
+                    """Сравнивает имена с учётом разных форматов (точно или частично)."""
+                    a = outcome_name.lower().strip()
+                    b = player_name.lower().strip()
+                    if a == b:
+                        return True
+                    # Частичное совпадение: одно содержит другое
+                    if a in b or b in a:
+                        return True
+                    # Совпадение по фамилии (последнее слово)
+                    a_last = a.split()[-1] if a.split() else a
+                    b_last = b.split()[-1] if b.split() else b
+                    if len(a_last) >= 4 and a_last == b_last:
+                        return True
+                    return False
+
                 for bm in bookmakers:
                     for market in bm.get("markets", []):
                         if market.get("key") == "h2h":
@@ -109,14 +126,18 @@ def get_tennis_matches(sport_key: str = None) -> List[Dict]:
                             for o in outcomes:
                                 name = o.get("name", "")
                                 price = o.get("price", 0)
-                                if name == home:
+                                if _name_matches(name, home):
                                     odds_p1 = price
-                                elif name == away:
+                                elif _name_matches(name, away):
                                     odds_p2 = price
-                            # Fallback по позиции если имена не совпали
-                            if not odds_p1 and len(outcomes) >= 2:
+                            # Fallback по позиции — только если ОБА имени не распознаны
+                            if not odds_p1 and not odds_p2 and len(outcomes) >= 2:
+                                # Определяем кто фаворит по позиции (The Odds API обычно даёт home первым)
                                 odds_p1 = outcomes[0].get("price", 0)
                                 odds_p2 = outcomes[1].get("price", 0)
+                                logger.debug(
+                                    f"[Tennis] Fallback по позиции: {home} @ {odds_p1}, {away} @ {odds_p2}"
+                                )
                             break
                     if odds_p1 and odds_p2:
                         break

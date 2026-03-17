@@ -305,6 +305,7 @@ def init_db():
             away_team TEXT,
             league TEXT,
             recommended_outcome TEXT,
+            bet_signal TEXT,
             ensemble_home REAL,
             ensemble_away REAL,
             ensemble_best_outcome TEXT,
@@ -319,6 +320,10 @@ def init_db():
             result_checked_at TIMESTAMP
         );
         """)
+        # Миграция: добавляем bet_signal если нет
+        _t_cols = [r[1] for r in cursor.execute("PRAGMA table_info(tennis_predictions)").fetchall()]
+        if "bet_signal" not in _t_cols:
+            cursor.execute("ALTER TABLE tennis_predictions ADD COLUMN bet_signal TEXT")
 
         # Создание таблицы basketball_predictions
         cursor.execute("""
@@ -388,6 +393,24 @@ def init_db():
             cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'ru'")
         if "bankroll" not in _u_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN bankroll REAL DEFAULT NULL")
+
+        # Таблица личных ставок пользователя
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_bets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            sport TEXT NOT NULL,
+            prediction_id INTEGER NOT NULL,
+            odds REAL,
+            created_at TEXT NOT NULL
+        );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_bets_user ON user_bets(user_id)")
+
+        # Миграция tennis bet_signal
+        _t_cols = [r[1] for r in cursor.execute("PRAGMA table_info(tennis_predictions)").fetchall()]
+        if "bet_signal" not in _t_cols:
+            cursor.execute("ALTER TABLE tennis_predictions ADD COLUMN bet_signal TEXT")
 
         conn.commit()
         print("[database] Tables initialized.")
@@ -933,6 +956,132 @@ def get_pl_stats(days: int = 30) -> dict:
         "best_streak":    best_streak,
         "current_streak": current_streak if streak_sign == 'w' else 0,
         "days":           days,
+    }
+
+
+def mark_user_bet(user_id: int, sport: str, prediction_id: int, odds: float = 0.0):
+    """Записывает ставку пользователя на прогноз в его личную историю."""
+    current_time = datetime.now(timezone.utc).isoformat()
+    with _get_db_connection() as conn:
+        # Проверяем, не нажимал ли уже (защита от двойного нажатия)
+        existing = conn.execute(
+            "SELECT id FROM user_bets WHERE user_id=? AND sport=? AND prediction_id=?",
+            (user_id, sport, prediction_id)
+        ).fetchone()
+        if existing:
+            return False  # уже записано
+        conn.execute(
+            "INSERT INTO user_bets (user_id, sport, prediction_id, odds, created_at) VALUES (?,?,?,?,?)",
+            (user_id, sport, prediction_id, odds, current_time)
+        )
+        conn.commit()
+        return True
+
+
+def get_user_pl_stats(user_id: int, days: int = 30) -> dict:
+    """
+    Считает личную P&L статистику пользователя за последние N дней.
+    Только те матчи, где пользователь нажал 'Я поставил' и есть real_outcome.
+    """
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    sport_tables = {
+        "football": "football_predictions",
+        "cs2": "cs2_predictions",
+        "tennis": "tennis_predictions",
+        "basketball": "basketball_predictions",
+    }
+    all_bets = []
+    with _get_db_connection() as conn:
+        for sport, table in sport_tables.items():
+            try:
+                rows = conn.execute(f"""
+                    SELECT p.recommended_outcome, p.real_outcome,
+                           p.bookmaker_odds_home, p.bookmaker_odds_away,
+                           ub.odds, ub.created_at
+                    FROM user_bets ub
+                    JOIN {table} p ON p.id = ub.prediction_id
+                    WHERE ub.user_id = ?
+                      AND ub.sport = ?
+                      AND p.real_outcome IS NOT NULL
+                      AND p.real_outcome != ''
+                      AND p.real_outcome != 'expired'
+                      AND ub.created_at >= ?
+                    ORDER BY ub.created_at ASC
+                """, (user_id, sport, cutoff)).fetchall()
+                all_bets.extend(rows)
+            except Exception:
+                continue
+
+    if not all_bets:
+        return {"total": 0, "wins": 0, "losses": 0, "roi": 0.0,
+                "profit_units": 0.0, "best_streak": 0, "current_streak": 0, "pending": 0}
+
+    # Считаем pending (ставки без результата)
+    pending = 0
+    with _get_db_connection() as conn:
+        for sport, table in sport_tables.items():
+            try:
+                r = conn.execute(f"""
+                    SELECT COUNT(*) FROM user_bets ub
+                    JOIN {table} p ON p.id = ub.prediction_id
+                    WHERE ub.user_id = ? AND ub.sport = ?
+                      AND (p.real_outcome IS NULL OR p.real_outcome = '')
+                      AND ub.created_at >= ?
+                """, (user_id, sport, cutoff)).fetchone()
+                pending += r[0] if r else 0
+            except Exception:
+                continue
+
+    wins = losses = 0
+    profit = 0.0
+    best_streak = current_streak = 0
+    streak_sign = None
+
+    for rec_outcome, real_outcome, odds_home, odds_away, ub_odds, _ in all_bets:
+        is_win = (rec_outcome == real_outcome)
+        # Используем сохранённый коэфф ставки пользователя, иначе из букмекера
+        if ub_odds and ub_odds > 1.01:
+            odds = float(ub_odds)
+        elif rec_outcome == "home_win":
+            odds = float(odds_home or 0)
+        elif rec_outcome == "away_win":
+            odds = float(odds_away or 0)
+        else:
+            odds = 0.0
+        if odds < 1.02:
+            odds = 1.85  # fallback
+
+        if is_win:
+            wins += 1
+            profit += (odds - 1)
+            if streak_sign == 'w':
+                current_streak += 1
+            else:
+                current_streak = 1
+                streak_sign = 'w'
+        else:
+            losses += 1
+            profit -= 1.0
+            if streak_sign == 'l':
+                current_streak += 1
+            else:
+                current_streak = 1
+                streak_sign = 'l'
+        if streak_sign == 'w' and current_streak > best_streak:
+            best_streak = current_streak
+
+    total = wins + losses
+    roi = round(profit / total * 100, 1) if total > 0 else 0.0
+    return {
+        "total":        total,
+        "wins":         wins,
+        "losses":       losses,
+        "roi":          roi,
+        "profit_units": round(profit, 2),
+        "best_streak":  best_streak,
+        "current_streak": current_streak if streak_sign == 'w' else 0,
+        "pending":      pending,
+        "days":         days,
     }
 
 
