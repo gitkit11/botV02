@@ -1803,7 +1803,8 @@ async def handle_text(message: types.Message):
             await message.answer("🎮 *Киберспорт CS2*\n\n⚠️ Не удалось загрузить матчи. Попробуй позже.", parse_mode="Markdown")
 
     elif text in ("📊 Статистика", "📊 Statistics"):
-        all_stats = get_statistics()
+        _loop_st = asyncio.get_running_loop()
+        all_stats = await _loop_st.run_in_executor(None, get_statistics)
 
         def _ai(a): return "🟢" if a >= 60 else ("🟡" if a >= 50 else "🔴")
         def _ri(r): return "🟢" if r > 0 else "🔴"
@@ -1881,12 +1882,13 @@ async def handle_text(message: types.Message):
             else:
                 stats_text += f"📋 Прогнозов: *{total}* | ⏳ Ожидают результата\n"
 
-            # Последние 5 результатов (компактно — только иконки)
-            if recent:
-                icons = ""
-                for r in recent[:5]:
-                    icons += "✅" if r.get("is_correct") == 1 else "❌"
-                stats_text += f"Последние: {icons}\n"
+            # Последние 5 результатов (компактно — только иконки, без expired=-1)
+            sport_icons = [
+                "✅" if r.get("is_correct") == 1 else "❌"
+                for r in recent if r.get("is_correct") in (0, 1)
+            ][:5]
+            if sport_icons:
+                stats_text += f"Последние: {''.join(sport_icons)}\n"
 
             # По месяцам
             monthly = s.get("monthly", [])
@@ -2903,9 +2905,12 @@ async def handle_callback(call: types.CallbackQuery):
     elif call.data.startswith("league_"):
         league_key = call.data[7:]
         league_name = dict(FOOTBALL_LEAGUES).get(league_key, league_key)
-        matches = get_matches(league=league_key, force=True)
+        await call.answer()
+        await call.message.edit_text(f"⚽ *{league_name}*\n\n⏳ Загружаю матчи...", parse_mode="Markdown")
+        _loop_lg = asyncio.get_running_loop()
+        matches = await _loop_lg.run_in_executor(None, lambda: get_matches(league=league_key, force=True))
         if not matches:
-            await call.answer(f"❌ Нет матчей для {league_name}. Попробуйте позже.", show_alert=True)
+            await call.message.edit_text(f"⚽ *{league_name}*\n\n❌ Нет матчей. Попробуйте позже.", parse_mode="Markdown")
             return
         await call.message.edit_text(
             f"⚽ *{league_name}*\n\nВыберите матч для анализа:",
