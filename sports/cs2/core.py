@@ -284,12 +284,20 @@ def format_cs2_full_report(
     h_standin  = analysis.get("home_standin", {})
     a_standin  = analysis.get("away_standin", {})
 
+    # Экранируем имена команд для Markdown V1 (точки, подчёркивания в CS2-никах)
+    def _esc(text: str) -> str:
+        for ch in ('_', '*', '`', '['):
+            text = text.replace(ch, "\\" + ch)
+        return text
+    _ht = _esc(str(home_team))
+    _at = _esc(str(away_team))
+
     report = f"🎮 *CHIMERA AI CS2 — АНАЛИЗ МАТЧА*\n"
     report += f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     # Контекст турнира
     if ctx.get("label"):
         report += f"{ctx['label']}\n"
-    report += f"⚔️ *{home_team}* vs *{away_team}*\n"
+    report += f"⚔️ *{_ht}* vs *{_at}*\n"
     # Дата и время матча
     if commence_time:
         try:
@@ -305,9 +313,9 @@ def format_cs2_full_report(
     report += "\n"
     # Stand-in предупреждения
     if h_standin.get("has_standin"):
-        report += f"⚠️ *STAND-IN {home_team}:* {h_standin['standin_player']} вместо {h_standin['missing_player']}\n"
+        report += f"⚠️ *STAND-IN {_ht}:* {h_standin['standin_player']} вместо {h_standin['missing_player']}\n"
     if a_standin.get("has_standin"):
-        report += f"⚠️ *STAND-IN {away_team}:* {a_standin['standin_player']} вместо {a_standin['missing_player']}\n"
+        report += f"⚠️ *STAND-IN {_at}:* {a_standin['standin_player']} вместо {a_standin['missing_player']}\n"
     if h_standin.get("has_standin") or a_standin.get("has_standin"):
         report += "\n"
 
@@ -350,10 +358,10 @@ def format_cs2_full_report(
         h_odds = bookmaker_odds.get("home_win", 0)
         a_odds = bookmaker_odds.get("away_win", 0)
         if h_odds > 0 and a_odds > 0:
-            report += f"💰 *КЭФЫ:* {home_team}: *{h_odds:.2f}* | {away_team}: *{a_odds:.2f}*\n\n"
+            report += f"💰 *КЭФЫ:* {_ht}: *{h_odds:.2f}* | {_at}: *{a_odds:.2f}*\n\n"
 
     # ── ELO рейтинги ──────────────────────────────────────────────────────
-    report += f"🏆 *ELO:* {home_team}: *{elo_h}* | {away_team}: *{elo_a}*\n\n"
+    report += f"🏆 *ELO:* {_ht}: *{elo_h}* | {_at}: *{elo_a}*\n\n"
 
     # ── Статистика (PandaScore) ────────────────────────────────────────────
     if h_stats.get("matches", 0) > 0 or a_stats.get("matches", 0) > 0:
@@ -361,18 +369,18 @@ def format_cs2_full_report(
         if h_stats.get("matches", 0) > 0:
             wr5_h = int(h_stats.get("winrate_last5", h_stats["winrate"]) * 100)
             trend_h = "🔥" if wr5_h >= 70 else ("📉" if wr5_h <= 30 else "")
-            report += (f" 🔹 {home_team}: `{h_stats.get('form','—')}` "
+            report += (f" 🔹 {_ht}: `{h_stats.get('form','—')}` "
                        f"WR={int(h_stats['winrate']*100)}%  last5={wr5_h}% {trend_h}\n")
         if a_stats.get("matches", 0) > 0:
             wr5_a = int(a_stats.get("winrate_last5", a_stats["winrate"]) * 100)
             trend_a = "🔥" if wr5_a >= 70 else ("📉" if wr5_a <= 30 else "")
-            report += (f" 🔸 {away_team}: `{a_stats.get('form','—')}` "
+            report += (f" 🔸 {_at}: `{a_stats.get('form','—')}` "
                        f"WR={int(a_stats['winrate']*100)}%  last5={wr5_a}% {trend_a}\n")
         report += "\n"
 
     # ── H2H ───────────────────────────────────────────────────────────────
     if h2h.get("total", 0) >= 2:
-        report += f"🤝 *H2H:* {home_team} {h2h['team1_wins']}:{h2h['team2_wins']} {away_team} (из {h2h['total']} встреч)\n\n"
+        report += f"🤝 *H2H:* {_ht} {h2h['team1_wins']}:{h2h['team2_wins']} {_at} (из {h2h['total']} встреч)\n\n"
 
     # ── Составы (HLTV) ────────────────────────────────────────────────────
     report += f"👥 *СОСТАВЫ (HLTV Rating):*\n"
@@ -380,10 +388,10 @@ def format_cs2_full_report(
     a_p_str = ", ".join([f"{p['name']} ({p['rating']})" for p in a_players[:5]])
     if h_p_str:
         h_avg = sum(p['rating'] for p in h_players) / len(h_players)
-        report += f" 🔹 {home_team} [ср. {h_avg:.2f}]: {h_p_str}\n"
+        report += f" 🔹 {_ht} [ср. {h_avg:.2f}]: {h_p_str}\n"
     if a_p_str:
         a_avg = sum(p['rating'] for p in a_players) / len(a_players)
-        report += f" 🔸 {away_team} [ср. {a_avg:.2f}]: {a_p_str}\n"
+        report += f" 🔸 {_at} [ср. {a_avg:.2f}]: {a_p_str}\n"
     report += "\n"
 
     # ── Вето ──────────────────────────────────────────────────────────────
@@ -405,7 +413,7 @@ def format_cs2_full_report(
     h_pct = int(analysis['home_prob'] * 100)
     a_pct = int(analysis['away_prob'] * 100)
     report += f"🔢 *ИТОГОВАЯ ВЕРОЯТНОСТЬ:*\n"
-    report += f" {home_team}: *{h_pct}%* | {away_team}: *{a_pct}%*\n"
+    report += f" {_ht}: *{h_pct}%* | {_at}: *{a_pct}%*\n"
     # Детали формулы
     lan_adj   = detail.get('lan_adj', 0)
     si_adj    = detail.get('standin_adj', 0)

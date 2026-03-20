@@ -265,6 +265,8 @@ async def run_tennis_form_prefetch_task():
 
 # --- 4. Глобальный кэш матчей и анализов ---
 matches_cache = []
+_league_matches_cache: dict = {}  # league_key → {"matches": [...], "ts": float}
+_LEAGUE_CACHE_TTL = 1200  # 20 минут
 cs2_matches_cache = []     # Кэш матчей CS2
 tennis_matches_cache = []  # Кэш матчей тенниса
 analysis_cache = {}  # Хранит результаты анализа по match_id
@@ -292,6 +294,17 @@ CHIMERA_DAILY_LIMIT = 7
 _chimera_history: dict = {}   # {user_id: [{"role": ..., "content": ...}, ...]}
 
 # --- 5. Вспомогательные функции ---
+
+def _safe_truncate(text: str, limit: int = 4000) -> str:
+    """Обрезает текст до лимита Telegram, сохраняя целые строки."""
+    if len(text) <= limit:
+        return text
+    truncated = text[:limit]
+    last_newline = truncated.rfind('\n')
+    if last_newline > limit - 200:
+        truncated = truncated[:last_newline]
+    return truncated + "\n\n⚠️ <i>Отчёт сокращён</i>"
+
 
 # Таблица соответствия названий команд (Odds API → датасет АПЛ)
 TEAM_NAME_MAP = {
@@ -416,33 +429,48 @@ _current_league = "soccer_epl"
 _last_matches_refresh = 0  # timestamp последнего обновления
 
 def get_matches(league: str = None, force: bool = False):
-    """Получает список ближайших матчей через The Odds API для выбранной лиги (кеш 30 мин)."""
-    global matches_cache, _last_matches_refresh, _current_league
+    """Получает список ближайших матчей через The Odds API для выбранной лиги (кеш 20 мин)."""
+    global matches_cache, _last_matches_refresh, _current_league, _league_matches_cache
     import time
     if league:
         _current_league = league
-    # Используем глобальный кеш (30 мин). force=True сбрасывает кеш.
+    league_key = _current_league
+
+    # Проверяем кеш по лиге (если force=False и кеш свежий)
+    if not force:
+        cached_entry = _league_matches_cache.get(league_key)
+        if cached_entry and (time.time() - cached_entry["ts"]) < _LEAGUE_CACHE_TTL:
+            matches_cache = cached_entry["matches"]
+            return cached_entry["matches"]
+
+    # force=True или кеш устарел — инвалидируем только эту лигу
     if force:
         try:
             from odds_cache import invalidate as _inv
-            _inv(_current_league)
+            _inv(league_key)
         except ImportError:
             pass
     try:
         from odds_cache import get_odds as _get_odds
         from datetime import datetime, timezone, timedelta
-        data = _get_odds(_current_league, markets="h2h,totals,spreads")
+        data = _get_odds(league_key, markets="h2h,totals,spreads")
         if data:
             now = datetime.now(timezone.utc)
             cutoff = (now - timedelta(hours=3)).isoformat()[:19]
             future = [m for m in data if m.get('commence_time', '') > cutoff]
-            matches_cache = future[:20]
+            result = future[:20]
+            _league_matches_cache[league_key] = {"matches": result, "ts": time.time()}
+            matches_cache = result
             _last_matches_refresh = time.time()
-            league_name = dict(FOOTBALL_LEAGUES).get(_current_league, _current_league)
-            print(f"[API] {league_name}: {len(matches_cache)} матчей.")
-            return matches_cache
+            league_name = dict(FOOTBALL_LEAGUES).get(league_key, league_key)
+            print(f"[API] {league_name}: {len(result)} матчей.")
+            return result
     except Exception as e:
         print(f"[API Ошибка] {e}")
+    # Возвращаем кеш этой лиги если есть, иначе глобальный matches_cache
+    cached_entry = _league_matches_cache.get(league_key)
+    if cached_entry:
+        return cached_entry["matches"]
     return matches_cache
 
 def _blend_ai(base_home_prob: float, ai_results: list,
@@ -749,6 +777,12 @@ _SHORT_NAMES = {
 
 def _short(name: str) -> str:
     return _SHORT_NAMES.get(name, name)
+
+def _escape_md(text: str) -> str:
+    """Экранирует спецсимволы для Markdown V1 в Telegram."""
+    for ch in ('_', '*', '`', '['):
+        text = text.replace(ch, "\\" + ch)
+    return text
 
 def format_matches_list(matches) -> str:
     """Текстовый список матчей со статусом для показа над кнопками."""
@@ -1098,11 +1132,15 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     else:
         _odds_line = ""
 
+    # Экранируем имена команд для Markdown V1
+    _ht = _escape_md(home_team)
+    _at = _escape_md(away_team)
+
     report = f"""
 🏆 *CHIMERA AI v4.3 — АНАЛИЗ МАТЧА*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
-⚽ *{home_team} vs {away_team}*
+⚽ *{_ht} vs {_at}*
 {(f'📅 *{match_time_str}*') if match_time_str else ''}
 {_odds_line}
 
@@ -1110,8 +1148,8 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
  П1: {home_prob:.0f}% | Х: {draw_prob:.0f}% | П2: {away_prob:.0f}%
 
 🗣 *ОРАКУЛ (новостной фон):*
- {home_team}: {home_sentiment_label}
- {away_team}: {away_sentiment_label}
+ {_ht}: {home_sentiment_label}
+ {_at}: {away_sentiment_label}
 {(chr(10) + injuries_block) if injuries_block else ""}
 {(chr(10) + math_section) if math_section else ""}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1152,6 +1190,7 @@ _{signal_reason}_
 
 def format_goals_report(home_team, away_team, goals_result, bookmaker_odds=None, poisson_probs=None):
     """Форматирует отчёт по рынку голов."""
+    _ht = _escape_md(home_team); _at = _escape_md(away_team)
     if bookmaker_odds is None:
         bookmaker_odds = {}
     summary = goals_result.get("summary", "")
@@ -1192,7 +1231,7 @@ def format_goals_report(home_team, away_team, goals_result, bookmaker_odds=None,
     odds_1_5_str = f" | КФ: {real_over_1_5}" if real_over_1_5 else ""
 
     return f"""
-⚽ *АНАЛИЗ ГОЛОВ — {home_team} vs {away_team}*
+⚽ *АНАЛИЗ ГОЛОВ — {_ht} vs {_at}*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _{summary}_
@@ -1216,6 +1255,7 @@ _{best_bet}_
 
 def format_corners_report(home_team, away_team, corners_result):
     """Форматирует отчёт по рынку угловых."""
+    _ht = _escape_md(home_team); _at = _escape_md(away_team)
     summary = corners_result.get("summary", "")
     total = corners_result.get("total_corners_over_9_5", "—")
     total_conf = corners_result.get("total_corners_confidence", 0)
@@ -1226,7 +1266,7 @@ def format_corners_report(home_team, away_team, corners_result):
     best_bet = corners_result.get("best_corners_bet", "")
 
     return f"""
-🚩 *АНАЛИЗ УГЛОВЫХ — {home_team} vs {away_team}*
+🚩 *АНАЛИЗ УГЛОВЫХ — {_ht} vs {_at}*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _{summary}_
@@ -1235,8 +1275,8 @@ _{summary}_
 {conf_icon(total_conf)} Тотал 9.5: *{total}* ({total_conf}%)
 _{total_reason}_
 
-🏠 {home_team}: *{home_c}* угловых
-✈️ {away_team}: *{away_c}* угловых
+🏠 {_ht}: *{home_c}* угловых
+✈️ {_at}: *{away_c}* угловых
 🏆 Больше угловых: *{winner}*
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1246,6 +1286,7 @@ _{best_bet}_
 
 def format_cards_report(home_team, away_team, cards_result):
     """Форматирует отчёт по рынку карточек."""
+    _ht = _escape_md(home_team); _at = _escape_md(away_team)
     summary = cards_result.get("summary", "")
     total = cards_result.get("total_cards_over_3_5", "—")
     total_conf = cards_result.get("total_cards_confidence", 0)
@@ -1256,7 +1297,7 @@ def format_cards_report(home_team, away_team, cards_result):
     best_bet = cards_result.get("best_cards_bet", "")
 
     return f"""
-🟨 *АНАЛИЗ КАРТОЧЕК — {home_team} vs {away_team}*
+🟨 *АНАЛИЗ КАРТОЧЕК — {_ht} vs {_at}*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _{summary}_
@@ -1275,6 +1316,7 @@ _{best_bet}_
 
 def format_handicap_report(home_team, away_team, handicap_result):
     """Форматирует отчёт по рынку гандикапов."""
+    _ht = _escape_md(home_team); _at = _escape_md(away_team)
     summary = handicap_result.get("summary", "")
     ah_home = handicap_result.get("asian_handicap_home", "—")
     ah_home_conf = handicap_result.get("asian_handicap_home_confidence", 0)
@@ -1285,14 +1327,14 @@ def format_handicap_report(home_team, away_team, handicap_result):
     best_bet = handicap_result.get("best_handicap_bet", "")
 
     return f"""
-⚖️ *ГАНДИКАПЫ — {home_team} vs {away_team}*
+⚖️ *ГАНДИКАПЫ — {_ht} vs {_at}*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _{summary}_
 
 📊 *АЗИАТСКИЙ ГАНДИКАП:*
-{conf_icon(ah_home_conf)} {home_team} -0.5: *{ah_home}* ({ah_home_conf}%)
-{conf_icon(ah_away_conf)} {away_team} +0.5: *{ah_away}* ({ah_away_conf}%)
+{conf_icon(ah_home_conf)} {_ht} -0.5: *{ah_home}* ({ah_home_conf}%)
+{conf_icon(ah_away_conf)} {_at} +0.5: *{ah_away}* ({ah_away_conf}%)
 
 🎯 *ДВОЙНОЙ ШАНС:*
 Рекомендация: *{dc}*
@@ -1546,6 +1588,11 @@ async def _handle_chimera_question(message: types.Message, question: str):
             if len(history) > 10:
                 history = history[-10:]
             _chimera_history[user_id] = history
+            # Ограничение памяти: если словарь вырос > 200 записей — удаляем самые старые
+            if len(_chimera_history) > 200:
+                oldest_keys = list(_chimera_history.keys())[:len(_chimera_history) - 200]
+                for _ok in oldest_keys:
+                    _chimera_history.pop(_ok, None)
 
             messages = [{"role": "system", "content": system_prompt}] + history
             used_model = None
@@ -1600,6 +1647,8 @@ async def _handle_chimera_question(message: types.Message, question: str):
             footer += f"  <i>{model_tag}</i>"
 
     # Остаёмся в режиме чата — следующее сообщение тоже пойдёт к Химере
+    if len(_chimera_waiting) > 500:
+        _chimera_waiting.clear()
     _chimera_waiting.add(user_id)
 
     exit_kb = types.ReplyKeyboardMarkup(
@@ -1800,7 +1849,7 @@ async def handle_text(message: types.Message):
             )
         except Exception as e:
             logger.error(f"[CS2] Ошибка: {e}")
-            await message.answer("🎮 *Киберспорт CS2*\n\n⚠️ Не удалось загрузить матчи. Попробуй позже.", parse_mode="Markdown")
+            await message.answer("🎮 *Киберспорт CS2*\n\n⚠️ Не удалось загрузить матчи. Проверь через 5 минут или выбери другую лигу.", parse_mode="Markdown")
 
     elif text in ("📊 Статистика", "📊 Statistics"):
         _loop_st = asyncio.get_running_loop()
@@ -2209,6 +2258,8 @@ async def chimera_ask_handler(call: types.CallbackQuery):
         await call.answer("Сегодня лимит исчерпан. Химера отдыхает до завтра.", show_alert=True)
         return
 
+    if len(_chimera_waiting) > 500:
+        _chimera_waiting.clear()
     _chimera_waiting.add(call.from_user.id)
     await call.answer()
     await call.message.answer(
@@ -2364,9 +2415,13 @@ async def handle_callback(call: types.CallbackQuery):
 
     # --- CS2 анализ матча ---
     if call.data.startswith("cs2_m_"):
-        match_index = int(call.data.split("_")[2])
+        try:
+            match_index = int(call.data.split("_")[2])
+        except (IndexError, ValueError):
+            await call.answer("⚠️ Некорректные данные.", show_alert=True)
+            return
         if match_index >= len(cs2_matches_cache):
-            await call.answer("Матч не найден.", show_alert=True)
+            await call.answer("⚠️ Матч не найден. Список мог устареть — вернись назад и обнови.", show_alert=True)
             return
         m = cs2_matches_cache[match_index]
         home_team = m["home"]
@@ -2601,6 +2656,7 @@ async def handle_callback(call: types.CallbackQuery):
                 )
             cs2_markets_kb.adjust(2)
             _cs2_kb = cs2_markets_kb.as_markup()
+            report = _safe_truncate(report)
             try:
                 await call.message.edit_text(report, parse_mode="Markdown", reply_markup=_cs2_kb)
             except Exception as _md_err:
@@ -2647,7 +2703,7 @@ async def handle_callback(call: types.CallbackQuery):
     # --- Назад к списку лиг CS2 ---
     elif call.data == "back_to_cs2_leagues" or call.data == "back_to_cs2":
         if not cs2_matches_cache:
-            await call.answer("Список устарел. Вернись в главное меню.", show_alert=True)
+            await call.answer("⏰ Список устарел. Нажми ⬅️ Назад и открой лигу заново.", show_alert=True)
             return
             
         leagues = sorted(list(set([m.get('league', 'Other') for m in cs2_matches_cache])))
@@ -2701,9 +2757,13 @@ async def handle_callback(call: types.CallbackQuery):
 
     # --- Теннис: полный анализ матча ---
     elif call.data.startswith("tennis_m_"):
-        match_idx = int(call.data.split("_")[2])
+        try:
+            match_idx = int(call.data.split("_")[2])
+        except (IndexError, ValueError):
+            await call.answer("⚠️ Некорректные данные.", show_alert=True)
+            return
         if match_idx >= len(tennis_matches_cache):
-            await call.answer("Матч не найден.", show_alert=True)
+            await call.answer("⚠️ Матч не найден. Список мог устареть — вернись назад и обнови.", show_alert=True)
             return
         m = tennis_matches_cache[match_idx]
         p1, p2    = m["player1"], m["player2"]
@@ -2885,6 +2945,7 @@ async def handle_callback(call: types.CallbackQuery):
                 )
             tennis_kb.adjust(2)
             _tn_kb = tennis_kb.as_markup()
+            report = _safe_truncate(report)
             await call.message.edit_text(report, parse_mode="HTML", reply_markup=_tn_kb)
             import time as _time
             _report_cache[f"tennis_{sport_key}_{match_idx}"] = {
@@ -3019,9 +3080,13 @@ async def handle_callback(call: types.CallbackQuery):
 
     # --- Показать меню рынков ---
     elif call.data.startswith("show_markets_"):
-        match_index = int(call.data.split("_")[2])
+        try:
+            match_index = int(call.data.split("_")[2])
+        except (IndexError, ValueError):
+            await call.answer("⚠️ Некорректные данные.", show_alert=True)
+            return
         if match_index >= len(matches_cache):
-            await call.answer("Матч не найден.", show_alert=True)
+            await call.answer("⚠️ Матч не найден. Список мог устареть — вернись назад и обнови.", show_alert=True)
             return
         match = matches_cache[match_index]
         home_team = match["home_team"]
@@ -3048,9 +3113,13 @@ async def handle_callback(call: types.CallbackQuery):
 
     # --- Выбор матча для анализа ---
     elif call.data.startswith("m_"):
-        match_index = int(call.data.split("_")[1])
+        try:
+            match_index = int(call.data.split("_")[1])
+        except (IndexError, ValueError):
+            await call.answer("⚠️ Некорректные данные.", show_alert=True)
+            return
         if match_index >= len(matches_cache):
-            await call.answer("Матч не найден. Обновите список.", show_alert=True)
+            await call.answer("⚠️ Матч не найден. Список мог устареть — вернись назад и обнови.", show_alert=True)
             return
 
         match = matches_cache[match_index]
@@ -3227,18 +3296,33 @@ async def handle_callback(call: types.CallbackQuery):
         _form_h = get_form_string(_team_form, home_team)
         _form_a = get_form_string(_team_form, away_team)
         async with _ai_semaphore:
-            stats_result, scout_result = await asyncio.gather(
-                _loop.run_in_executor(None, lambda: run_statistician_agent(
-                    prophet_data, team_stats_text,
-                    poisson_probs=poisson_probs, elo_probs=elo_probs,
-                    home_form=_form_h, away_form=_form_a,
-                )),
-                _loop.run_in_executor(None, run_scout_agent, home_team, away_team, news_summary),
-            )
-            gpt_result = await _loop.run_in_executor(None, lambda: run_arbitrator_agent(
-                stats_result, scout_result, bookmaker_odds,
-                poisson_probs=poisson_probs, elo_probs=elo_probs,
-            ))
+            try:
+                stats_result, scout_result = await asyncio.wait_for(
+                    asyncio.gather(
+                        _loop.run_in_executor(None, lambda: run_statistician_agent(
+                            prophet_data, team_stats_text,
+                            poisson_probs=poisson_probs, elo_probs=elo_probs,
+                            home_form=_form_h, away_form=_form_a,
+                        )),
+                        _loop.run_in_executor(None, run_scout_agent, home_team, away_team, news_summary),
+                    ),
+                    timeout=90.0
+                )
+            except asyncio.TimeoutError:
+                stats_result = {"error": "Таймаут агента Статистик/Скаут (>90с)"}
+                scout_result = {"error": "Таймаут агента Статистик/Скаут (>90с)"}
+                print("[AI Таймаут] Статистик/Скаут не ответили за 90с")
+            try:
+                gpt_result = await asyncio.wait_for(
+                    _loop.run_in_executor(None, lambda: run_arbitrator_agent(
+                        stats_result, scout_result, bookmaker_odds,
+                        poisson_probs=poisson_probs, elo_probs=elo_probs,
+                    )),
+                    timeout=90.0
+                )
+            except asyncio.TimeoutError:
+                gpt_result = {"error": "Таймаут агента Арбитр (>90с)", "bet_signal": "ПРОПУСТИТЬ"}
+                print("[AI Таймаут] Арбитр не ответил за 90с")
 
         try:
             await _sm.edit_text(
@@ -3254,13 +3338,21 @@ async def handle_callback(call: types.CallbackQuery):
             pass
 
         async with _ai_semaphore:
-            llama_result, mixtral_result = await asyncio.gather(
-                _loop.run_in_executor(None, lambda: run_llama_agent(
-                    home_team, away_team, prophet_data, news_summary, bookmaker_odds,
-                    team_stats_text, poisson_probs=poisson_probs, elo_probs=elo_probs,
-                )),
-                _loop.run_in_executor(None, run_mixtral_agent, home_team, away_team, prophet_data, news_summary, bookmaker_odds, team_stats_text, poisson_probs, elo_probs),
-            )
+            try:
+                llama_result, mixtral_result = await asyncio.wait_for(
+                    asyncio.gather(
+                        _loop.run_in_executor(None, lambda: run_llama_agent(
+                            home_team, away_team, prophet_data, news_summary, bookmaker_odds,
+                            team_stats_text, poisson_probs=poisson_probs, elo_probs=elo_probs,
+                        )),
+                        _loop.run_in_executor(None, run_mixtral_agent, home_team, away_team, prophet_data, news_summary, bookmaker_odds, team_stats_text, poisson_probs, elo_probs),
+                    ),
+                    timeout=90.0
+                )
+            except asyncio.TimeoutError:
+                llama_result = {"error": "Таймаут агента Тень/Mixtral (>90с)"}
+                mixtral_result = {"error": "Таймаут агента Тень/Mixtral (>90с)"}
+                print("[AI Таймаут] Тень/Mixtral не ответили за 90с")
 
         # Взвешенный ансамбль всех моделей
         ensemble_probs = None
@@ -3493,6 +3585,7 @@ async def handle_callback(call: types.CallbackQuery):
         )
 
         _football_kb = build_markets_keyboard(match_index)
+        final_report = _safe_truncate(final_report)
         await call.message.edit_text(
             final_report,
             parse_mode="Markdown",
@@ -3541,7 +3634,11 @@ async def handle_callback(call: types.CallbackQuery):
 
     # --- Рынок: Победитель ---
     elif call.data.startswith("mkt_winner_"):
-        match_index = int(call.data.split("_")[2])
+        try:
+            match_index = int(call.data.split("_")[2])
+        except (IndexError, ValueError):
+            await call.answer("⚠️ Некорректные данные.", show_alert=True)
+            return
         cached = analysis_cache.get(match_index)
         if not cached:
             await call.answer("Сначала запустите анализ матча.", show_alert=True)
@@ -3591,7 +3688,11 @@ _{signal_reason}_
 
     # --- Рынок: Голы ---
     elif call.data.startswith("mkt_goals_"):
-        match_index = int(call.data.split("_")[2])
+        try:
+            match_index = int(call.data.split("_")[2])
+        except (IndexError, ValueError):
+            await call.answer("⚠️ Некорректные данные.", show_alert=True)
+            return
         cached = analysis_cache.get(match_index)
         if not cached:
             await call.answer("Сначала запустите анализ матча.", show_alert=True)
@@ -3609,7 +3710,11 @@ _{signal_reason}_
 
     # --- Рынок: Гандикапы ---
     elif call.data.startswith("mkt_handicap_"):
-        match_index = int(call.data.split("_")[2])
+        try:
+            match_index = int(call.data.split("_")[2])
+        except (IndexError, ValueError):
+            await call.answer("⚠️ Некорректные данные.", show_alert=True)
+            return
         cached = analysis_cache.get(match_index)
         if not cached:
             await call.answer("Сначала запустите анализ матча.", show_alert=True)
@@ -4464,7 +4569,8 @@ async def auto_refresh_matches_task():
     while True:
         await asyncio.sleep(21600)  # 6 часов
         try:
-            matches = get_matches(force=True)
+            _loop_ref = asyncio.get_running_loop()
+            matches = await _loop_ref.run_in_executor(None, lambda: get_matches(force=True))
             league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "")
             print(f"[Авто] Список матчей обновлён: {league_name} — {len(matches)} матчей")
         except Exception as e:
@@ -4609,7 +4715,7 @@ async def bball_analyze_match(call: types.CallbackQuery):
 
     matches = _basketball_cache.get(league_key, [])
     if idx >= len(matches):
-        await call.message.edit_text("⚠️ Матч не найден.", parse_mode="HTML")
+        await call.message.edit_text("⚠️ Матч не найден. Список мог устареть — вернись назад и обнови.", parse_mode="HTML")
         return
 
     # Проверяем кеш готового отчёта (45 мин)
@@ -4815,10 +4921,18 @@ async def bball_analyze_match(call: types.CallbackQuery):
                 return {"analysis": f"(Тень недоступна: {e})"}
 
         loop = asyncio.get_running_loop()
-        gpt_res, llama_res = await asyncio.gather(
-            loop.run_in_executor(None, _run_gpt_basketball),
-            loop.run_in_executor(None, _run_llama_basketball),
-        )
+        try:
+            gpt_res, llama_res = await asyncio.wait_for(
+                asyncio.gather(
+                    loop.run_in_executor(None, _run_gpt_basketball),
+                    loop.run_in_executor(None, _run_llama_basketball),
+                ),
+                timeout=90.0
+            )
+        except asyncio.TimeoutError:
+            gpt_res = {"analysis": "Таймаут AI агента (>90с)"}
+            llama_res = {"analysis": "Таймаут AI агента (>90с)"}
+            print("[AI Таймаут] Баскетбол: агенты не ответили за 90с")
 
         gpt_text   = gpt_res.get("analysis", "—")
         llama_text = llama_res.get("analysis", "—")
@@ -5021,6 +5135,7 @@ async def bball_analyze_match(call: types.CallbackQuery):
             )
         bball_kb.adjust(2)
         _bb_kb = bball_kb.as_markup()
+        report = _safe_truncate(report)
         await call.message.edit_text(report, parse_mode="HTML", reply_markup=_bb_kb)
         import time as _time
         _report_cache[f"bball_{league_key}_{idx}"] = {

@@ -5,6 +5,7 @@ api_football.py — Модуль для получения статистики 
 import requests
 import json
 import os
+import time
 from datetime import datetime, timedelta
 
 try:
@@ -15,9 +16,25 @@ except ImportError:
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_FOOTBALL_KEY} if API_FOOTBALL_KEY else {}
 
-# Кэш для экономии запросов (TTL 6 часов)
+# Кэш для экономии запросов (TTL 30 минут)
 _stats_cache = {}
-CACHE_TTL = 6 * 3600  # секунды
+CACHE_TTL = 1800  # 30 минут в секундах
+
+# Вспомогательная функция-обёртка для кеширования
+_af_cache: dict = {}
+_AF_CACHE_TTL = 1800  # 30 минут
+
+def _cached_get(cache_key: str, fetch_fn):
+    """
+    Возвращает данные из in-memory кеша если они не старше _AF_CACHE_TTL секунд.
+    Иначе вызывает fetch_fn(), сохраняет результат и возвращает его.
+    """
+    now = time.time()
+    if cache_key in _af_cache and now - _af_cache[cache_key]["ts"] < _AF_CACHE_TTL:
+        return _af_cache[cache_key]["data"]
+    result = fetch_fn()
+    _af_cache[cache_key] = {"ts": now, "data": result}
+    return result
 
 # ID лиг
 LEAGUE_IDS = {
@@ -114,57 +131,61 @@ def get_team_stats(team_name, league_key="soccer_epl", season=None):
         return None
 
     cache_key = f"stats_{team_id}_{league_id}_{season}"
-    cached = _cache_get(cache_key)
-    if cached:
-        return cached
 
-    try:
-        r = requests.get(
-            f"{BASE_URL}/teams/statistics",
-            headers=HEADERS,
-            params={"team": team_id, "league": league_id, "season": season},
-            timeout=10
-        )
-        data = r.json()
+    def _fetch_stats():
+        try:
+            r = requests.get(
+                f"{BASE_URL}/teams/statistics",
+                headers=HEADERS,
+                params={"team": team_id, "league": league_id, "season": season},
+                timeout=10
+            )
+            data = r.json()
 
-        if not data.get("response"):
-            print(f"[API-Football] Нет данных для {team_name}: {data.get('errors')}")
+            if not data.get("response"):
+                print(f"[API-Football] Нет данных для {team_name}: {data.get('errors')}")
+                return None
+
+            s = data["response"]
+            form_raw = s.get("form", "")
+            # Берём последние 5 матчей из формы
+            last5 = form_raw[-5:] if len(form_raw) >= 5 else form_raw
+
+            result = {
+                "team": s["team"]["name"],
+                "form_full": form_raw,
+                "form_last5": last5,
+                "wins_home": s["fixtures"]["wins"]["home"],
+                "wins_away": s["fixtures"]["wins"]["away"],
+                "draws_home": s["fixtures"]["draws"]["home"],
+                "draws_away": s["fixtures"]["draws"]["away"],
+                "losses_home": s["fixtures"]["loses"]["home"],
+                "losses_away": s["fixtures"]["loses"]["away"],
+                "goals_for_home_avg": s["goals"]["for"]["average"]["home"],
+                "goals_for_away_avg": s["goals"]["for"]["average"]["away"],
+                "goals_against_home_avg": s["goals"]["against"]["average"]["home"],
+                "goals_against_away_avg": s["goals"]["against"]["average"]["away"],
+                "goals_for_total": s["goals"]["for"]["total"]["total"],
+                "goals_against_total": s["goals"]["against"]["total"]["total"],
+                "clean_sheets_home": s.get("clean_sheet", {}).get("home", 0),
+                "clean_sheets_away": s.get("clean_sheet", {}).get("away", 0),
+                "failed_to_score_home": s.get("failed_to_score", {}).get("home", 0),
+                "failed_to_score_away": s.get("failed_to_score", {}).get("away", 0),
+            }
+
+            _cache_set(cache_key, result)
+            print(f"[API-Football] Статистика {team_name}: форма={last5}, голов дома={result['goals_for_home_avg']}")
+            return result
+
+        except Exception as e:
+            print(f"[API-Football] Ошибка при запросе статистики {team_name}: {e}")
             return None
 
-        s = data["response"]
-        form_raw = s.get("form", "")
-        # Берём последние 5 матчей из формы
-        last5 = form_raw[-5:] if len(form_raw) >= 5 else form_raw
-
-        result = {
-            "team": s["team"]["name"],
-            "form_full": form_raw,
-            "form_last5": last5,
-            "wins_home": s["fixtures"]["wins"]["home"],
-            "wins_away": s["fixtures"]["wins"]["away"],
-            "draws_home": s["fixtures"]["draws"]["home"],
-            "draws_away": s["fixtures"]["draws"]["away"],
-            "losses_home": s["fixtures"]["loses"]["home"],
-            "losses_away": s["fixtures"]["loses"]["away"],
-            "goals_for_home_avg": s["goals"]["for"]["average"]["home"],
-            "goals_for_away_avg": s["goals"]["for"]["average"]["away"],
-            "goals_against_home_avg": s["goals"]["against"]["average"]["home"],
-            "goals_against_away_avg": s["goals"]["against"]["average"]["away"],
-            "goals_for_total": s["goals"]["for"]["total"]["total"],
-            "goals_against_total": s["goals"]["against"]["total"]["total"],
-            "clean_sheets_home": s.get("clean_sheet", {}).get("home", 0),
-            "clean_sheets_away": s.get("clean_sheet", {}).get("away", 0),
-            "failed_to_score_home": s.get("failed_to_score", {}).get("home", 0),
-            "failed_to_score_away": s.get("failed_to_score", {}).get("away", 0),
-        }
-
-        _cache_set(cache_key, result)
-        print(f"[API-Football] Статистика {team_name}: форма={last5}, голов дома={result['goals_for_home_avg']}")
-        return result
-
-    except Exception as e:
-        print(f"[API-Football] Ошибка при запросе статистики {team_name}: {e}")
-        return None
+    # Проверяем быстрый in-memory кеш (30 мин), затем legacy _stats_cache
+    cached_legacy = _cache_get(cache_key)
+    if cached_legacy:
+        return cached_legacy
+    return _cached_get(cache_key, _fetch_stats)
 
 
 def get_match_stats(home_team, away_team, league_key="soccer_epl"):
@@ -233,67 +254,71 @@ def get_h2h(home_team: str, away_team: str, last_n: int = 10) -> dict | None:
             return None
 
     cache_key = f"h2h_{min(home_id, away_id)}_{max(home_id, away_id)}_{last_n}"
-    cached = _cache_get(cache_key)
-    if cached:
-        return cached
 
-    try:
-        r = requests.get(
-            f"{BASE_URL}/fixtures/headtohead",
-            headers=HEADERS,
-            params={"h2h": f"{home_id}-{away_id}", "last": last_n},
-            timeout=10
-        )
-        data = r.json()
-        fixtures = data.get("response", [])
-        if not fixtures:
+    def _fetch_h2h():
+        try:
+            r = requests.get(
+                f"{BASE_URL}/fixtures/headtohead",
+                headers=HEADERS,
+                params={"h2h": f"{home_id}-{away_id}", "last": last_n},
+                timeout=10
+            )
+            data = r.json()
+            fixtures = data.get("response", [])
+            if not fixtures:
+                return None
+
+            home_wins = away_wins = draws = 0
+            total_goals = btts_count = 0
+
+            for fix in fixtures:
+                goals = fix.get("goals", {})
+                hg = goals.get("home") or 0
+                ag = goals.get("away") or 0
+                total_goals += hg + ag
+                if hg > 0 and ag > 0:
+                    btts_count += 1
+
+                home_fix_id = fix.get("teams", {}).get("home", {}).get("id")
+                if hg > ag:
+                    if home_fix_id == home_id:
+                        home_wins += 1
+                    else:
+                        away_wins += 1
+                elif hg < ag:
+                    if home_fix_id == home_id:
+                        away_wins += 1
+                    else:
+                        home_wins += 1
+                else:
+                    draws += 1
+
+            total = len(fixtures)
+            result = {
+                "total":          total,
+                "home_wins":      home_wins,
+                "away_wins":      away_wins,
+                "draws":          draws,
+                "home_win_rate":  round(home_wins / total, 3) if total else 0.33,
+                "away_win_rate":  round(away_wins / total, 3) if total else 0.33,
+                "draw_rate":      round(draws / total, 3) if total else 0.25,
+                "avg_total_goals": round(total_goals / total, 2) if total else 2.5,
+                "btts_rate":      round(btts_count / total, 3) if total else 0.5,
+            }
+            _cache_set(cache_key, result)
+            print(f"[API-Football H2H] {home_team} vs {away_team}: "
+                  f"П1={home_wins} X={draws} П2={away_wins} из {total} матчей")
+            return result
+
+        except Exception as e:
+            print(f"[API-Football H2H] Ошибка {home_team} vs {away_team}: {e}")
             return None
 
-        home_wins = away_wins = draws = 0
-        total_goals = btts_count = 0
-
-        for fix in fixtures:
-            goals = fix.get("goals", {})
-            hg = goals.get("home") or 0
-            ag = goals.get("away") or 0
-            total_goals += hg + ag
-            if hg > 0 and ag > 0:
-                btts_count += 1
-
-            home_fix_id = fix.get("teams", {}).get("home", {}).get("id")
-            if hg > ag:
-                if home_fix_id == home_id:
-                    home_wins += 1
-                else:
-                    away_wins += 1
-            elif hg < ag:
-                if home_fix_id == home_id:
-                    away_wins += 1
-                else:
-                    home_wins += 1
-            else:
-                draws += 1
-
-        total = len(fixtures)
-        result = {
-            "total":          total,
-            "home_wins":      home_wins,
-            "away_wins":      away_wins,
-            "draws":          draws,
-            "home_win_rate":  round(home_wins / total, 3) if total else 0.33,
-            "away_win_rate":  round(away_wins / total, 3) if total else 0.33,
-            "draw_rate":      round(draws / total, 3) if total else 0.25,
-            "avg_total_goals": round(total_goals / total, 2) if total else 2.5,
-            "btts_rate":      round(btts_count / total, 3) if total else 0.5,
-        }
-        _cache_set(cache_key, result)
-        print(f"[API-Football H2H] {home_team} vs {away_team}: "
-              f"П1={home_wins} X={draws} П2={away_wins} из {total} матчей")
-        return result
-
-    except Exception as e:
-        print(f"[API-Football H2H] Ошибка {home_team} vs {away_team}: {e}")
-        return None
+    # Проверяем быстрый in-memory кеш (30 мин), затем legacy _stats_cache
+    cached_legacy = _cache_get(cache_key)
+    if cached_legacy:
+        return cached_legacy
+    return _cached_get(cache_key, _fetch_h2h)
 
 
 def format_h2h_text(home_team: str, away_team: str, h2h: dict) -> str:
