@@ -2906,9 +2906,20 @@ async def handle_callback(call: types.CallbackQuery):
         league_key = call.data[7:]
         league_name = dict(FOOTBALL_LEAGUES).get(league_key, league_key)
         await call.answer()
-        await call.message.edit_text(f"⚽ *{league_name}*\n\n⏳ Загружаю матчи...", parse_mode="Markdown")
+        # Пробуем кеш (20 мин TTL из odds_cache) — без force, чтобы не блокировать
         _loop_lg = asyncio.get_running_loop()
-        matches = await _loop_lg.run_in_executor(None, lambda: get_matches(league=league_key, force=True))
+        matches = await _loop_lg.run_in_executor(None, lambda: get_matches(league=league_key, force=False))
+        if not matches:
+            # Кеш пустой — грузим с API, показываем индикатор
+            await call.message.edit_text(f"⚽ *{league_name}*\n\n⏳ Загружаю матчи...", parse_mode="Markdown")
+            try:
+                matches = await asyncio.wait_for(
+                    _loop_lg.run_in_executor(None, lambda: get_matches(league=league_key, force=True)),
+                    timeout=20.0
+                )
+            except asyncio.TimeoutError:
+                await call.message.edit_text(f"⚽ *{league_name}*\n\n⚠️ API не отвечает. Попробуй позже.", parse_mode="Markdown")
+                return
         if not matches:
             await call.message.edit_text(f"⚽ *{league_name}*\n\n❌ Нет матчей. Попробуйте позже.", parse_mode="Markdown")
             return
@@ -2987,9 +2998,18 @@ async def handle_callback(call: types.CallbackQuery):
 
     # --- Обновление матчей ---
     elif call.data == "refresh_matches":
-        matches = get_matches(force=True)
+        await call.answer("🔄 Обновляю...")
+        _loop_rm = asyncio.get_running_loop()
+        try:
+            matches = await asyncio.wait_for(
+                _loop_rm.run_in_executor(None, lambda: get_matches(force=True)),
+                timeout=20.0
+            )
+        except asyncio.TimeoutError:
+            await call.message.edit_text("⚠️ Не удалось обновить — API не отвечает.", reply_markup=build_matches_keyboard(matches_cache))
+            return
         if not matches:
-            await call.answer("❌ Не удалось обновить матчи.", show_alert=True)
+            await call.message.edit_text("❌ Не удалось обновить матчи.", reply_markup=build_matches_keyboard(matches_cache))
             return
         league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "")
         await call.message.edit_text(
