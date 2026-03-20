@@ -281,7 +281,18 @@ def _resolve_hltv_name(team_name: str) -> str:
     return canonical
 
 
-def load_dynamic_cache():
+# ── In-memory кеш hltv_cache.json — загружается один раз, не при каждом вызове ──
+import time as _time
+_hltv_mem_cache: dict = {}
+_hltv_mem_ts: float = 0.0
+_HLTV_MEM_TTL = 300  # 5 минут — обновляем из файла редко
+
+# ── In-memory кеш результатов get_player_stats — TTL 1 час ──
+_player_cache: dict = {}
+_PLAYER_CACHE_TTL = 3600  # 1 час
+
+def load_dynamic_cache() -> dict:
+    """Загружает кеш с диска. Внутри используй _get_hltv_cache() для in-memory доступа."""
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, 'r', encoding='utf-8') as f:
@@ -290,27 +301,51 @@ def load_dynamic_cache():
             return {}
     return {}
 
+def _get_hltv_cache() -> dict:
+    """In-memory кеш с TTL 5 минут. Не читает файл при каждом вызове."""
+    global _hltv_mem_cache, _hltv_mem_ts
+    if _hltv_mem_cache and (_time.time() - _hltv_mem_ts) < _HLTV_MEM_TTL:
+        return _hltv_mem_cache
+    _hltv_mem_cache = load_dynamic_cache()
+    _hltv_mem_ts = _time.time()
+    return _hltv_mem_cache
+
 def save_dynamic_cache(data):
+    global _hltv_mem_cache, _hltv_mem_ts
     try:
         with open(CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        # Обновляем in-memory кеш сразу чтобы последующие читатели видели свежие данные
+        _hltv_mem_cache = data
+        _hltv_mem_ts = _time.time()
     except Exception as e:
         logger.error(f"Ошибка сохранения кэша HLTV: {e}")
 
 def get_team_map_stats(team_name: str) -> dict:
     name = _resolve_hltv_name(team_name)
-    cache = load_dynamic_cache()
+    cache = _get_hltv_cache()  # из памяти, не с диска
     return cache.get("maps", {}).get(name) or MAP_STATS.get(name, {})
 
 def get_player_stats(team_name: str) -> list:
     name = _resolve_hltv_name(team_name)
-    cache = load_dynamic_cache()
-    return cache.get("players", {}).get(name) or PLAYER_STATS.get(name, [])
+    # Проверяем in-memory кеш с TTL 1 час
+    cached = _player_cache.get(name)
+    if cached is not None:
+        data, ts = cached
+        if (_time.time() - ts) < _PLAYER_CACHE_TTL:
+            return data
+    # Получаем данные из hltv-кеша или статического словаря
+    hltv = _get_hltv_cache()
+    result = hltv.get("players", {}).get(name) or PLAYER_STATS.get(name, [])
+    # Сохраняем в кеш только если есть данные
+    if result:
+        _player_cache[name] = (result, _time.time())
+    return result
 
 def update_team_stats(team_name: str, maps: dict = None, players: list = None):
     """Обновляет динамический кэш для команды."""
     name = _resolve_hltv_name(team_name)
-    cache = load_dynamic_cache()
+    cache = load_dynamic_cache()  # здесь нужна свежая версия с диска
     if "maps" not in cache:
         cache["maps"] = {}
     if "players" not in cache:

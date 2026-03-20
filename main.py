@@ -736,8 +736,8 @@ async def show_ai_thinking(msg, home: str, away: str, sport: str = "football"):
             parse_mode="HTML"
         )
         await asyncio.sleep(0.6)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[ignore] {_e}")
 
 
 # --- 6. Клавиатуры ---
@@ -1348,30 +1348,137 @@ _{best_bet}_
 # --- 8. Хендлеры Telegram ---
 @dp.message(Command("stats"))
 async def get_stats_command(message: types.Message):
-    football_stats = get_statistics("football")
-    cs2_stats = get_statistics("cs2")
+    """Команда /stats — та же статистика что и кнопка 📊 Статистика."""
+    _loop_st = asyncio.get_running_loop()
+    all_stats = await _loop_st.run_in_executor(None, get_statistics)
 
-    response = "📊 **СТАТИСТИКА ПРОГНОЗОВ** 📊\n\n"
+    def _acc_bar(acc: float) -> str:
+        filled = round(acc / 10)
+        return "▓" * filled + "░" * (10 - filled)
 
-    if football_stats and football_stats['total_predictions'] > 0:
-        response += "**⚽ Футбол:**\n"
-        response += f"  Всего прогнозов: {football_stats['total_predictions']} (проверено: {football_stats['checked_predictions']})\n"
-        response += f"  Верных: {football_stats['correct_predictions']}\n"
-        response += f"  Точность: {football_stats['accuracy']:.2f}%\n"
-        response += f"  ROI: {football_stats['roi']:.2f}%\n\n"
-    else:
-        response += "**⚽ Футбол:** Пока нет статистики для отображения.\n\n"
+    def _streak_str(recent: list) -> str:
+        if not recent:
+            return ""
+        streak_icon = "✅" if recent[0].get("is_correct") == 1 else "❌"
+        count = 0
+        for r in recent:
+            if (r.get("is_correct") == 1) == (streak_icon == "✅"):
+                count += 1
+            else:
+                break
+        return f"{streak_icon} ×{count}" if count > 1 else streak_icon
 
-    if cs2_stats and cs2_stats['total_predictions'] > 0:
-        response += "**🎮 CS2:**\n"
-        response += f"  Всего прогнозов: {cs2_stats['total_predictions']} (проверено: {cs2_stats['checked_predictions']})\n"
-        response += f"  Верных: {cs2_stats['correct_predictions']}\n"
-        response += f"  Точность: {cs2_stats['accuracy']:.2f}%\n"
-        response += f"  ROI: {cs2_stats['roi']:.2f}%\n\n"
-    else:
-        response += "**🎮 CS2:** Пока нет статистики для отображения.\n\n"
+    all_total   = sum(all_stats.get(k, {}).get("total", 0)         for k in ("football","cs2","tennis","basketball"))
+    all_checked = sum(all_stats.get(k, {}).get("total_checked", 0) for k in ("football","cs2","tennis","basketball"))
+    all_correct = sum(all_stats.get(k, {}).get("correct", 0)       for k in ("football","cs2","tennis","basketball"))
+    all_acc     = round(all_correct / all_checked * 100, 1) if all_checked > 0 else 0
 
-    await message.answer(response, parse_mode="Markdown")
+    stats_text = (
+        "📊 *Статистика Chimera AI*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    if all_checked > 0:
+        stats_text += (
+            f"🎯 Угадано: *{all_correct} из {all_checked}* прогнозов\n"
+            f"`{_acc_bar(all_acc)}` *{all_acc}%*\n"
+            f"📋 Всего в базе: *{all_total}* | Ожидают результата: *{all_total - all_checked}*\n"
+        )
+    stats_text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    has_data = False
+
+    for sport_key, sport_label in [
+        ("football",   "⚽ Футбол"),
+        ("cs2",        "🎮 CS2"),
+        ("tennis",     "🎾 Теннис"),
+        ("basketball", "🏀 Баскетбол"),
+    ]:
+        s = all_stats.get(sport_key, {})
+        total   = s.get("total", 0)
+        checked = s.get("total_checked", 0)
+        correct = s.get("correct", 0)
+        acc     = s.get("accuracy", 0)
+        pending = total - checked
+        if total == 0:
+            continue
+        has_data = True
+
+        recent  = s.get("recent", [])
+        streak  = _streak_str(recent)
+
+        stats_text += f"*{sport_label}*"
+        if streak:
+            stats_text += f"  {streak}"
+        stats_text += "\n"
+
+        if checked > 0:
+            stats_text += (
+                f"`{_acc_bar(acc)}` *{acc:.0f}%*\n"
+                f"🎯 *{correct}/{checked}* угадано"
+            )
+            if pending > 0:
+                stats_text += f"  ·  ⏳ ждём *{pending}*"
+            stats_text += "\n"
+        else:
+            stats_text += f"📋 Прогнозов: *{total}* | ⏳ Ожидают результата\n"
+
+        sport_icons = [
+            "✅" if r.get("is_correct") == 1 else "❌"
+            for r in recent if r.get("is_correct") in (0, 1)
+        ][:5]
+        if sport_icons:
+            stats_text += f"Последние: {''.join(sport_icons)}\n"
+
+        monthly = s.get("monthly", [])
+        if monthly:
+            for row in monthly[:1]:
+                mt = row.get("total", 0) if isinstance(row, dict) else row[1]
+                mc = row.get("correct", 0) if isinstance(row, dict) else row[2]
+                mn = row.get("month", "") if isinstance(row, dict) else row[0]
+                if mt > 0:
+                    ma = mc / mt * 100
+                    stats_text += f"📅 {mn}: *{mc}/{mt}* ({ma:.0f}%)\n"
+        stats_text += "\n"
+
+    chimera_history = get_chimera_signal_history(limit=10)
+    if chimera_history:
+        ch_checked = [r for r in chimera_history if r["is_correct"] is not None]
+        ch_wins    = sum(1 for r in ch_checked if r["is_correct"] == 1)
+        ch_pending = sum(1 for r in chimera_history if r["is_correct"] is None)
+        ch_acc     = round(ch_wins / len(ch_checked) * 100) if ch_checked else 0
+        ch_streak  = _streak_str(
+            [{"is_correct": r["is_correct"]} for r in chimera_history if r["is_correct"] is not None]
+        )
+        sport_icons_map = {"football": "⚽", "cs2": "🎮", "tennis": "🎾", "basketball": "🏀"}
+        stats_text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        stats_text += f"*🎯 Сигналы дня*"
+        if ch_streak:
+            stats_text += f"  {ch_streak}"
+        stats_text += "\n"
+        if ch_checked:
+            stats_text += f"`{_acc_bar(ch_acc)}` *{ch_acc}%*\n"
+            stats_text += f"🎯 *{ch_wins}/{len(ch_checked)}* угадано"
+            if ch_pending:
+                stats_text += f"  ·  ⏳ ждём *{ch_pending}*"
+            stats_text += "\n"
+        else:
+            stats_text += f"⏳ Ждём результаты: *{ch_pending}*\n"
+        done_icons = []
+        for r in chimera_history:
+            if r["is_correct"] in (0, 1):
+                done_icons.append("✅" if r["is_correct"] == 1 else "❌")
+                if len(done_icons) >= 5:
+                    break
+        if done_icons:
+            stats_text += f"Последние: {''.join(done_icons)}\n"
+
+    if not has_data and not chimera_history:
+        stats_text = (
+            "📊 *Статистика Chimera AI*\n\n"
+            "Пока нет сохранённых прогнозов.\n"
+            "Сделайте первый анализ матча!"
+        )
+    await message.answer(stats_text, parse_mode="Markdown")
     # --- Команда /learn_and_suggest ---
 @dp.message(Command("learn_and_suggest"))
 async def learn_and_suggest_command(message: types.Message):
@@ -1420,15 +1527,16 @@ async def meta_learner_callback_handler(callback_query: types.CallbackQuery):
 
     if action == "accept":
         await callback_query.message.edit_text("Принимаю предложения и применяю изменения...", reply_markup=None)
-        cs2_performance = learner.analyze_performance("cs2")
+        _loop_ml = asyncio.get_running_loop()
+        cs2_performance = await _loop_ml.run_in_executor(None, lambda: learner.analyze_performance("cs2"))
         cs2_suggestions = learner.suggest_config_updates("cs2", cs2_performance)
         if cs2_suggestions:
-            learner.apply_config_updates("cs2", cs2_suggestions)
+            await _loop_ml.run_in_executor(None, lambda: learner.apply_config_updates("cs2", cs2_suggestions))
 
-        football_performance = learner.analyze_performance("football")
+        football_performance = await _loop_ml.run_in_executor(None, lambda: learner.analyze_performance("football"))
         football_suggestions = learner.suggest_config_updates("football", football_performance)
         if football_suggestions:
-            learner.apply_config_updates("football", football_suggestions)
+            await _loop_ml.run_in_executor(None, lambda: learner.apply_config_updates("football", football_suggestions))
 
         await callback_query.message.answer("✅ Изменения успешно применены! Файл signal_engine.py обновлен (создана резервная копия).", parse_mode="Markdown")
     elif action == "decline":
@@ -1710,8 +1818,8 @@ async def cb_hunt_refresh(call: types.CallbackQuery):
     kb = _build_hunt_kb(0, len(moves))
     try:
         await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[ignore] {_e}")
 
 
 @dp.callback_query(lambda c: c.data.startswith("hunt_page_"))
@@ -1729,8 +1837,8 @@ async def cb_hunt_page(call: types.CallbackQuery):
     kb = _build_hunt_kb(page, len(moves))
     try:
         await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[ignore] {_e}")
 
 
 @dp.message()
@@ -2300,8 +2408,8 @@ async def mybet_handler(call: types.CallbackQuery):
                         new_rows.append(new_row)
                 new_markup = types.InlineKeyboardMarkup(inline_keyboard=new_rows) if new_rows else None
                 await call.message.edit_reply_markup(reply_markup=new_markup)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
     else:
         await call.answer("Ты уже записал эту ставку.", show_alert=True)
 
@@ -2386,8 +2494,8 @@ async def handle_callback(call: types.CallbackQuery):
                 await call.message.edit_reply_markup(
                     reply_markup=types.InlineKeyboardMarkup(inline_keyboard=new_rows)
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[ignore] {_e}")
         else:
             await call.answer("Ты уже записал эту ставку.", show_alert=True)
         return
@@ -2408,8 +2516,8 @@ async def handle_callback(call: types.CallbackQuery):
         kb   = _build_chimera_carousel_kb(candidates, idx, call.from_user.id)
         try:
             await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
         await call.answer()
         return
 
@@ -2456,8 +2564,8 @@ async def handle_callback(call: types.CallbackQuery):
                 from line_movement import make_match_key, record_odds as _record_cs2_odds
                 _cs2_lm_key = make_match_key(home_team, away_team, m.get("commence_time", ""))
                 _record_cs2_odds(_cs2_lm_key, odds)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[ignore] {_e}")
             golden_signals = get_golden_signal(analysis, odds)
             h_stats = analysis.get("home_stats", {})
             a_stats = analysis.get("away_stats", {})
@@ -2636,8 +2744,8 @@ async def handle_callback(call: types.CallbackQuery):
                 upsert_user(call.from_user.id, call.from_user.username or "", call.from_user.first_name or "")
                 track_analysis(call.from_user.id, "cs2")
                 log_action(call.from_user.id, "анализ CS2")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[ignore] {_e}")
 
             cs2_markets_kb = InlineKeyboardBuilder()
             cs2_markets_kb.button(text="🏆 Победитель матча", callback_data=f"cs2_mkt_winner_{match_index}")
@@ -2787,8 +2895,8 @@ async def handle_callback(call: types.CallbackQuery):
                 from line_movement import make_match_key, record_odds as _record_tn_odds
                 _tn_lm_key = make_match_key(p1, p2, m.get("commence_time", ""))
                 _record_tn_odds(_tn_lm_key, {"home_win": o1, "away_win": o2})
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[ignore] {_e}")
 
         no_odds_note = "\n<i>⚠️ Коэффициенты недоступны — только аналитика</i>" if no_odds else ""
         status_msg = await call.message.edit_text(
@@ -2925,8 +3033,8 @@ async def handle_callback(call: types.CallbackQuery):
                 upsert_user(call.from_user.id, call.from_user.username or "", call.from_user.first_name or "")
                 track_analysis(call.from_user.id, "tennis")
                 log_action(call.from_user.id, "анализ Теннис")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[ignore] {_e}")
 
             tennis_kb = InlineKeyboardBuilder()
             tennis_kb.button(text="🎾 Победитель", callback_data=f"tennis_mkt_winner_{match_idx}")
@@ -3022,12 +3130,12 @@ async def handle_callback(call: types.CallbackQuery):
         lang = "ru"
         try:
             lang = get_user_language(call.from_user.id)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
         try:
             await call.message.delete()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
         await call.message.answer(
             "🏠 <b>Главное меню</b>",
             parse_mode="HTML",
@@ -3160,8 +3268,8 @@ async def handle_callback(call: types.CallbackQuery):
                 "🐍 <b>Змея:</b> считает ELO, Пуассон, xG...",
                 parse_mode="HTML"
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
 
         bookmaker_odds = get_bookmaker_odds(match)
 
@@ -3334,8 +3442,8 @@ async def handle_callback(call: types.CallbackQuery):
                 "🌀 <b>Тень:</b> независимая проверка...",
                 parse_mode="HTML"
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
 
         async with _ai_semaphore:
             try:
@@ -3516,8 +3624,8 @@ async def handle_callback(call: types.CallbackQuery):
             upsert_user(call.from_user.id, call.from_user.username or "", call.from_user.first_name or "")
             track_analysis(call.from_user.id, "football")
             log_action(call.from_user.id, "анализ Футбол")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
 
         # CHIMERA Multi-Agent
         _football_chimera_block = ""
@@ -3564,7 +3672,7 @@ async def handle_callback(call: types.CallbackQuery):
             if _movement_block:
                 _football_chimera_block = (_football_chimera_block + "\n\n" + _movement_block).strip()
         except Exception as _lme:
-            pass
+            logger.debug(f"[ignore] {_lme}")
 
         final_report = format_main_report(
             home_team, away_team,
@@ -3609,8 +3717,8 @@ async def handle_callback(call: types.CallbackQuery):
                 _lm = _get_lm(str(match.get("id", "")), top_sig.get("outcome", ""))
                 if _lm:
                     top_sig["line_movement"] = _lm
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[ignore] {_e}")
             sig_text = format_signal(top_sig)
             sig_text = "🐉 <b>ХИМЕРА (Змея + Лев + Козёл + Тень)</b>\n\n" + sig_text
             # Кнопка "Я поставил"
@@ -3629,8 +3737,8 @@ async def handle_callback(call: types.CallbackQuery):
                 ]])
             try:
                 await call.message.answer(sig_text, parse_mode="HTML", reply_markup=_sig_kb)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[ignore] {_e}")
 
     # --- Рынок: Победитель ---
     elif call.data.startswith("mkt_winner_"):
@@ -4253,8 +4361,8 @@ async def check_results_task(bot: Bot):
                             _cl = _get_cl(str(_nb.get("match_id", "")), _rec, _entry_odds)
                             if _cl:
                                 _closing_str = f"\n{_cl}"
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            logger.debug(f"[ignore] {_e}")
 
                         _closing_line = f"{_closing_str}\n" if _closing_str else ""
                         if _is_win:
@@ -4554,8 +4662,8 @@ async def auto_elo_recalibration_task():
                     import importlib, ml.predictor as _pred
                     importlib.reload(_pred)
                     print("[XGBoost-Авто] Предиктор перезагружен")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[ignore] {_e}")
             elif _result["status"] == "skip":
                 print(f"[XGBoost-Авто] Пропуск: {_result['reason']}")
             else:
@@ -5116,8 +5224,8 @@ async def bball_analyze_match(call: types.CallbackQuery):
             upsert_user(call.from_user.id, call.from_user.username or "", call.from_user.first_name or "")
             track_analysis(call.from_user.id, "basketball")
             log_action(call.from_user.id, "анализ Баскетбол")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ignore] {_e}")
 
         bball_kb = InlineKeyboardBuilder()
         bball_kb.button(text="🏀 Победитель", callback_data=f"bball_mkt_winner_{league_key}_{idx}")
@@ -5515,8 +5623,8 @@ async def cmd_signals(message: types.Message):
                                 if hist_mov.get("score_boost"):
                                     c["chimera_score"] = c.get("chimera_score", 0) + hist_mov["score_boost"]
                                     c["hist_movement"] = hist_mov
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                logger.debug(f"[ignore] {_e}")
                     cands.extend(c_list)
                 except Exception as _ce:
                     print(f"[CHIMERA] Ошибка {m.get('home_team','')} vs {m.get('away_team','')}: {_ce}")

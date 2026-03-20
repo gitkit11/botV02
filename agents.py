@@ -160,23 +160,32 @@ def call_ai(prompt, client_instance, model, retries=2):
             
         except Exception as e:
             error_type = type(e).__name__
-            print(f"[{model} ОШИБКА попытка {attempt+1}] {error_type}: {str(e)[:100]}")
-            
-            # Специальная обработка для Groq 403 (Access Denied)
-            if is_groq and "403" in str(e):
-                print(f"[{model}] ⚠️ Groq API вернула 403 (Access Denied). Проверьте:")
-                print(f"    1. API ключ в GROQ_API_KEY")
-                print(f"    2. Региональные ограничения")
-                print(f"    3. Лимит запросов")
-                return {"error": f"Groq 403: Access Denied", "status": "blocked", "model": model}
+            err_str = str(e)
+            print(f"[{model} ОШИБКА попытка {attempt+1}] {error_type}: {err_str[:100]}")
+            logger.warning(f"[AI] Retry {attempt+1}/{retries} для {model}: {err_str[:200]}")
 
-            # Groq 429 — превышен rate limit, ждём и повторяем
-            if is_groq and "429" in str(e):
-                retry_after = 15 * (attempt + 1)
-                print(f"[{model}] ⚠️ Groq 429 Rate Limit. Жду {retry_after}с...")
-                time.sleep(retry_after)
+            # 403 — сразу raise, не retry
+            if "403" in err_str:
+                if is_groq:
+                    print(f"[{model}] ⚠️ Groq API вернула 403 (Access Denied). Проверьте:")
+                    print(f"    1. API ключ в GROQ_API_KEY")
+                    print(f"    2. Региональные ограничения")
+                    print(f"    3. Лимит запросов")
+                return {"error": f"403: Access Denied", "status": "blocked", "model": model}
+
+            # 429 / rate_limit — ждём дольше и повторяем
+            if "429" in err_str or "rate_limit" in err_str.lower():
+                sleep_sec = 5 if not is_groq else 15 * (attempt + 1)
+                print(f"[{model}] ⚠️ Rate limit (429). Жду {sleep_sec}с...")
+                time.sleep(sleep_sec)
                 continue
-            
+
+            # 500 / 503 — сервер временно недоступен, короткая пауза
+            if "500" in err_str or "503" in err_str:
+                print(f"[{model}] ⚠️ Сервер недоступен (5xx). Жду 3с...")
+                time.sleep(3)
+                continue
+
             if attempt < retries - 1:
                 time.sleep(2)
                 
