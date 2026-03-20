@@ -71,6 +71,9 @@ def scan_tennis_signals() -> list:
     if not matches:
         return []
 
+    # Ограничиваем до 15 лучших матчей для скана (по EV кэфа)
+    matches = sorted(matches, key=lambda x: abs(x.get("odds_p1", 2) - 2), reverse=True)[:15]
+
     all_candidates = []
 
     for m in matches:
@@ -87,18 +90,18 @@ def scan_tennis_signals() -> list:
             except Exception:
                 pass
 
-            # Реальная форма и H2H из api-tennis.com
+            # Читаем форму и H2H из фонового кэша (мгновенно, без HTTP)
             p1_form = p2_form = "?????"
             h2h_p1_wins = h2h_total = 0
             try:
-                from sports.tennis.api_tennis import get_player_form, get_h2h_by_name
-                f1 = get_player_form(m["player1"])
-                f2 = get_player_form(m["player2"])
-                p1_form = f1.get("form", "?????") or "?????"
-                p2_form = f2.get("form", "?????") or "?????"
-                h2h = get_h2h_by_name(m["player1"], m["player2"])
-                h2h_p1_wins = h2h.get("p1_wins", 0)
-                h2h_total   = h2h.get("total", 0)
+                from sports.tennis.form_cache import get_cached_form, get_cached_h2h
+                c1 = get_cached_form(m["player1"])
+                c2 = get_cached_form(m["player2"])
+                p1_form = c1.get("form", "?????") or "?????"
+                p2_form = c2.get("form", "?????") or "?????"
+                ch2h = get_cached_h2h(m["player1"], m["player2"])
+                h2h_p1_wins = ch2h.get("p1_wins", 0)
+                h2h_total   = ch2h.get("total", 0)
             except Exception:
                 pass
 
@@ -107,6 +110,10 @@ def scan_tennis_signals() -> list:
                 sport_key=m["sport_key"], surface=surface,
                 p1_form=p1_form, p2_form=p2_form,
                 h2h_p1_wins=h2h_p1_wins, h2h_total=h2h_total,
+                odds_p1=m.get("odds_p1", 0),
+                odds_p2=m.get("odds_p2", 0),
+                no_vig_p1=m.get("no_vig_p1", 0.0),
+                no_vig_p2=m.get("no_vig_p2", 0.0),
             )
 
             candidates = compute_tennis_chimera_score(
@@ -120,9 +127,22 @@ def scan_tennis_signals() -> list:
                 line_movement=movement,
                 sport_key=m["sport_key"],
             )
-            # Добавляем время матча в каждый кандидат
+            # Тотал геймов с реальной букмекерской линией
+            from sports.tennis.model import predict_tennis_game_totals
+            from sports.tennis.rankings import detect_tour
+            tour = detect_tour(m["sport_key"])
+            game_totals = predict_tennis_game_totals(
+                p1_win=probs["p1_win"], p2_win=probs["p2_win"],
+                p1_rank=probs.get("p1_rank", 100), p2_rank=probs.get("p2_rank", 100),
+                surface=surface, tour=tour,
+                bm_total_line=m.get("bm_total_line", 0.0),
+                bm_total_over=m.get("bm_total_over", 0.0),
+                bm_total_under=m.get("bm_total_under", 0.0),
+            )
+            # Добавляем время матча и тоталы в каждый кандидат
             for c in candidates:
                 c["commence_time"] = m.get("commence_time", "")
+                c["game_totals"]   = game_totals
             all_candidates.extend(candidates)
         except Exception as e:
             import logging

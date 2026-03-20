@@ -84,8 +84,6 @@ def _call_ai(prompt, client, model, system_msg=None, retries=2):
                     return f"❌ Ошибка парсинга JSON от {model}"
             if attempt < retries - 1:
                 time.sleep(1)
-            if attempt < retries - 1:
-                time.sleep(1)
         except Exception as e:
             err = str(e)[:120]
             # Если ошибка 403 (Access Denied) или другие критические ошибки Groq
@@ -103,7 +101,8 @@ def _call_ai(prompt, client, model, system_msg=None, retries=2):
 def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
                            agent_type="gpt-4o", home_stats=None, away_stats=None, h2h=None,
                            tournament_context: dict = None,
-                           home_standin: dict = None, away_standin: dict = None):
+                           home_standin: dict = None, away_standin: dict = None,
+                           data_confidence: float = 1.0):
     """
     Запускает AI-агента для анализа матча CS2.
 
@@ -119,6 +118,22 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
     ctx_block = f"\nФОРМАТ: {ctx.get('label','Online')} | Тир: {ctx.get('tier','B')}"
     is_lan = ctx.get("type") in ("major", "lan_s", "lan_a")
     ctx_block += f"\nMEDIUM: {'🎯 LAN — давление, публика, лучший интернет' if is_lan else '💻 Online — меньше нервов, привычная обстановка'}"
+
+    # ── Блок доверия к данным ────────────────────────────────────────────────
+    data_warn_block = ""
+    if data_confidence < 0.5:
+        missing = []
+        if not (home_stats and home_stats.get("matches", 0) > 0):
+            missing.append(f"нет матч. истории {home_team}")
+        if not (away_stats and away_stats.get("matches", 0) > 0):
+            missing.append(f"нет матч. истории {away_team}")
+        if not _HLTV_AVAILABLE:
+            missing.append("HLTV недоступен")
+        data_warn_block = (
+            f"\n⚠️ МАЛО ДАННЫХ (уверенность модели: {int(data_confidence*100)}%)"
+            + (f" — {'; '.join(missing)}" if missing else "")
+            + ". Вероятности близки к 50/50, прогноз ненадёжен."
+        )
 
     # ── Stand-in блок ────────────────────────────────────────────────────────
     standin_block = ""
@@ -160,7 +175,7 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
         prompt = f"""Ты — профессиональный аналитик CS2 для беттинга. Анализируй строго и честно.
 
 МАТЧ: {home_team} vs {away_team}
-КЭФЫ: {home_team}={home_odds} | {away_team}={away_odds}{ctx_block}{standin_block}
+КЭФЫ: {home_team}={home_odds} | {away_team}={away_odds}{ctx_block}{standin_block}{data_warn_block}
 {stats_block}
 {hltv_block}
 
@@ -187,7 +202,7 @@ def run_cs2_analyst_agent(home_team, away_team, map_stats, bookmaker_odds,
         prompt = f"""Ты — тактический аналитик CS2, независимый от GPT. Смотри на данные критически.
 
 МАТЧ: {home_team} vs {away_team}
-КЭФЫ: {home_team}={home_odds} | {away_team}={away_odds}{ctx_block}{standin_block}
+КЭФЫ: {home_team}={home_odds} | {away_team}={away_odds}{ctx_block}{standin_block}{data_warn_block}
 {stats_block}
 {hltv_block}
 

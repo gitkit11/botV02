@@ -107,6 +107,10 @@ def calculate_tennis_probs(
     h2h_total: int = 0,
     p1_rest_days: int = -1,
     p2_rest_days: int = -1,
+    odds_p1: float = 0.0,
+    odds_p2: float = 0.0,
+    no_vig_p1: float = 0.0,  # Pinnacle no-vig — наиболее точная вероятность
+    no_vig_p2: float = 0.0,
 ) -> dict:
     """
     Главная функция — вычисляет вероятности победы для теннисного матча.
@@ -154,6 +158,28 @@ def calculate_tennis_probs(
 
     # Ограничиваем [0.10, 0.82] — не позволяем модели быть слишком уверенной
     p1_win = max(0.10, min(0.82, p1_win))
+
+    # Подмешиваем рыночную вероятность
+    # Рынок (особенно Pinnacle) — лучший предиктор в теннисе
+    # Приоритет: Pinnacle no-vig (65%) > сырые кефы (55%)
+    if no_vig_p1 > 0.05 and no_vig_p2 > 0.05:
+        # Pinnacle no-vig — самый точный источник, маржа уже снята
+        p1_win = p1_win * 0.35 + no_vig_p1 * 0.65
+        p1_win = max(0.08, min(0.94, p1_win))
+    elif odds_p1 > 1.02 and odds_p2 > 1.02:
+        imp1 = 1.0 / odds_p1
+        imp2 = 1.0 / odds_p2
+        total_imp = imp1 + imp2
+        bk_p1 = imp1 / total_imp
+        # Не рекомендуем исход если модель и рынок расходятся > 25%
+        model_market_gap = abs(p1_win - bk_p1)
+        if model_market_gap > 0.25:
+            # Сильное расхождение — доверяем рынку больше
+            p1_win = p1_win * 0.30 + bk_p1 * 0.70
+        else:
+            p1_win = p1_win * 0.45 + bk_p1 * 0.55
+        p1_win = max(0.08, min(0.93, p1_win))
+
     p2_win = 1.0 - p1_win
 
     return {
@@ -181,53 +207,64 @@ def predict_tennis_game_totals(
     surface: str = "hard",
     tour: str = "atp",
     best_of: int = 3,
+    bm_total_line: float = 0.0,
+    bm_total_over: float = 0.0,
+    bm_total_under: float = 0.0,
 ) -> dict:
     """
     Предсказывает тотал геймов в матче (OVER/UNDER).
 
-    Стандартные линии: BO3 → 20.5, 21.5, 22.5; BO5 → 34.5, 35.5
-    Логика:
-    - Большой разрыв рейтингов → доминация → UNDER (короткий матч 6-2, 6-3)
-    - Равные игроки → OVER (тесные сеты, тайбрейки)
-    - Clay → OVER (длинные розыгрыши)
-    - Grass → UNDER (сервисные доминации, короткие геймы)
+    Если есть букмекерская линия (bm_total_line) — используем её и считаем EV.
+    Иначе — оценочная формула, помечается как has_real_line=False.
     """
     gap = abs(p1_win - p2_win)  # 0 = равные, 0.5+ = явный фаворит
 
-    # Стандартная линия по туру
-    if best_of == 5:
+    # Определяем линию: реальная из букмекера или расчётная
+    has_real_line = bm_total_line > 0 and bm_total_over > 0 and bm_total_under > 0
+    if has_real_line:
+        base_line = bm_total_line
+    elif best_of == 5:
         base_line = 34.5
     elif tour == "wta":
-        base_line = 19.5  # женские матчи короче
+        base_line = 19.5
     else:
-        base_line = 21.5  # ATP BO3
+        base_line = 21.5
 
-    # Базовая вероятность UNDER (равные → OVER, неравные → UNDER)
-    # gap=0.00 → p_under≈0.35 (равные, много геймов)
-    # gap=0.30 → p_under≈0.55 (один явно сильнее)
-    # gap=0.50 → p_under≈0.65 (очень неравные)
+    # Базовая вероятность UNDER
     p_under = 0.35 + gap * 0.60
     p_under = max(0.28, min(0.72, p_under))
 
     # Коррекция поверхности
-    surface_adj = {
-        "clay":  -0.08,   # глина → длиннее (OVER)
-        "grass": +0.08,   # трава → короче (UNDER)
-        "hard":  0.00,
-    }
+    surface_adj = {"clay": -0.08, "grass": +0.08, "hard": 0.00}
     p_under += surface_adj.get(surface, 0.0)
     p_under = max(0.25, min(0.75, p_under))
 
-    # Коррекция рейтинга: если оба топ-20 → ожидаем жёсткую борьбу (OVER)
+    # Коррекция рейтинга
     if p1_rank <= 20 and p2_rank <= 20:
-        p_under -= 0.05  # топ-матч → OVER
-    # Если один из них топ-5 → может доминировать (UNDER)
+        p_under -= 0.05
     elif min(p1_rank, p2_rank) <= 5 and max(p1_rank, p2_rank) >= 30:
         p_under += 0.05
 
+    # Если есть букмекерская линия — подтягиваем нашу оценку к рынку (вес 35%)
+    if has_real_line:
+        bm_impl_under = (1 / bm_total_under) / (1 / bm_total_under + 1 / bm_total_over)
+        p_under = p_under * 0.65 + bm_impl_under * 0.35
+
     p_under = max(0.25, min(0.75, p_under))
     p_over  = 1.0 - p_under
-    prediction = f"UNDER {base_line}" if p_under > p_over else f"OVER {base_line}"
+
+    # Выбор прогноза
+    if p_under > p_over:
+        prediction = f"UNDER {base_line}"
+        best_odds  = bm_total_under if has_real_line else 0
+        best_prob  = p_under
+    else:
+        prediction = f"OVER {base_line}"
+        best_odds  = bm_total_over if has_real_line else 0
+        best_prob  = p_over
+
+    # EV — только если есть реальные котировки
+    ev = round((best_prob * best_odds - 1) * 100, 1) if (has_real_line and best_odds > 1) else None
 
     # Причина
     surface_names = {"hard": "хард", "clay": "глина", "grass": "трава"}
@@ -241,15 +278,20 @@ def predict_tennis_game_totals(
     else:
         reason = f"Небольшой разрыв в классе — стандартный по объёму матч"
 
-    return {
-        "prediction":   prediction,
-        "line":         base_line,
-        "under_prob":   round(p_under, 2),
-        "over_prob":    round(p_over, 2),
-        "confidence":   round(max(p_under, p_over) * 100),
-        "reason":       reason,
-        "surface":      surface,
+    result = {
+        "prediction":    prediction,
+        "line":          base_line,
+        "under_prob":    round(p_under, 2),
+        "over_prob":     round(p_over, 2),
+        "confidence":    round(max(p_under, p_over) * 100),
+        "reason":        reason,
+        "surface":       surface,
+        "has_real_line": has_real_line,
+        "bm_over_odds":  round(bm_total_over, 2) if has_real_line else 0,
+        "bm_under_odds": round(bm_total_under, 2) if has_real_line else 0,
+        "ev":            ev,
     }
+    return result
 
 
 def compute_tennis_chimera_score(
@@ -323,7 +365,7 @@ def compute_tennis_chimera_score(
 
         ev = round((prob * odds - 1) * 100, 1)
         kelly_raw = max(0, (prob * odds - 1) / (odds - 1)) * 100 if odds > 1 else 0
-        kelly = round(min(kelly_raw, 20.0), 1)  # максимум 20% банка
+        kelly = round(min(kelly_raw * 0.5, 10.0), 1)  # половина Келли, максимум 10% банка
 
         surface_emoji = {"hard": "🎾", "clay": "🟫", "grass": "🟩"}.get(surface, "🎾")
 

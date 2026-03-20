@@ -91,16 +91,31 @@ def update_map_stats(team: str, map_name: str, won: bool):
         logger.error(f"[CS2 Map] Ошибка обновления {team}/{map_name}: {e}")
 
 
-def get_finished_cs2_matches(hours_back: int = 12) -> list:
+def get_finished_cs2_matches(hours_back: int = 12, pending_ids: list = None) -> list:
     """
-    Получает завершённые матчи CS2 из Esports Data API (RapidAPI).
-    Fallback: PandaScore если RapidAPI недоступен.
-    Возвращает список dict: {match_id, home, away, winner, loser, home_score, away_score, maps}
+    Получает завершённые матчи CS2 из обоих источников.
+    pending_ids: список числовых PandaScore ID из pending predictions — точечный запрос.
     """
-    results = _get_finished_esports_data()
-    if results:
-        return results
-    return _get_finished_pandascore()
+    results = []
+    seen_ids = set()
+
+    # Источник 1: Esports Data API (Tier 1-3)
+    for m in _get_finished_esports_data():
+        mid = m["match_id"]
+        if mid not in seen_ids:
+            results.append(m)
+            seen_ids.add(mid)
+
+    # Источник 2: PandaScore — точечно по нужным ID или последние 100
+    numeric_ids = [i for i in (pending_ids or []) if str(i).isdigit()]
+    for m in _get_finished_pandascore(match_ids=numeric_ids if numeric_ids else None):
+        mid = m["match_id"]
+        if mid not in seen_ids:
+            results.append(m)
+            seen_ids.add(mid)
+
+    logger.info(f"[CS2 Tracker] Всего завершённых матчей: {len(results)}")
+    return results
 
 
 def _get_finished_esports_data() -> list:
@@ -172,15 +187,28 @@ def _get_finished_esports_data() -> list:
         return []
 
 
-def _get_finished_pandascore() -> list:
-    """Fallback: PandaScore (только Tier 3-4 на бесплатном плане)."""
+def _get_finished_pandascore(match_ids: list = None) -> list:
+    """
+    PandaScore: ищет результаты.
+    Если переданы match_ids — делает точечный запрос по конкретным ID.
+    Иначе — запрашивает последние 100 завершённых матчей.
+    """
     try:
         from .pandascore import _request_with_retry, PANDASCORE_BASE
-        r = _request_with_retry(
-            f"{PANDASCORE_BASE}/matches",
-            params={"per_page": 50, "filter[status]": "finished",
-                    "filter[videogame]": "cs-go", "sort": "-end_at"},
-        )
+        if match_ids:
+            # Точечный запрос по ID — намного точнее, не зависит от сортировки
+            ids_str = ",".join(str(i) for i in match_ids if str(i).isdigit())
+            if not ids_str:
+                return []
+            r = _request_with_retry(
+                f"{PANDASCORE_BASE}/matches",
+                params={"filter[id]": ids_str, "per_page": 50},
+            )
+        else:
+            r = _request_with_retry(
+                f"{PANDASCORE_BASE}/matches/past",
+                params={"per_page": 100, "sort": "-end_at"},
+            )
         if not r or not r.ok:
             return []
 
@@ -239,20 +267,33 @@ def check_and_update_cs2_results() -> int:
         logger.info("[CS2 Tracker] Нет непроверенных прогнозов CS2")
         return 0
 
-    finished = get_finished_cs2_matches(hours_back=48)
+    # Числовые ID для точечного запроса к PandaScore (только настоящие ID)
+    numeric_ids = [str(p["match_id"]) for p in pending if str(p.get("match_id","")).isdigit()]
+    # Всегда запрашиваем последние матчи по имени — основной путь для chimera_* ID
+    finished = get_finished_cs2_matches(hours_back=72, pending_ids=numeric_ids if numeric_ids else None)
     if not finished:
         logger.info("[CS2 Tracker] Нет завершённых матчей CS2 за 48 часов")
         return 0
+
+    # normalize_team_name: "G2" → "G2 Esports", "NaVi" → "Natus Vincere" и т.д.
+    try:
+        from .team_registry import normalize_team_name as _norm_cs2
+    except Exception:
+        def _norm_cs2(n):
+            return n.lower().strip()
+
+    def _cs2_key(name: str) -> str:
+        return _norm_cs2(name).lower().strip()
 
     elo_data = load_elo()
     finished_by_id   = {m["match_id"]: m for m in finished}
     # Fallback: по нормализованным именам команд
     finished_by_name = {}
     for m in finished:
-        key = (m["home"].lower().strip(), m["away"].lower().strip())
-        finished_by_name[key] = m
-        key2 = (m["away"].lower().strip(), m["home"].lower().strip())
-        finished_by_name[key2] = m  # обе стороны
+        h_key = _cs2_key(m["home"])
+        a_key = _cs2_key(m["away"])
+        finished_by_name[(h_key, a_key)] = m
+        finished_by_name[(a_key, h_key)] = m  # обе стороны
 
     updated = 0
 
@@ -260,11 +301,11 @@ def check_and_update_cs2_results() -> int:
         match_id = str(pred.get("match_id", ""))
         result = finished_by_id.get(match_id)
         if result is None:
-            h = pred.get("home_team", "").lower().strip()
-            a = pred.get("away_team", "").lower().strip()
+            h = _cs2_key(pred.get("home_team", ""))
+            a = _cs2_key(pred.get("away_team", ""))
             result = finished_by_name.get((h, a))
             if result:
-                logger.info(f"[CS2 Tracker] Совпадение по именам: {h} vs {a}")
+                logger.info(f"[CS2 Tracker] Совпадение по именам: {pred.get('home_team')} vs {pred.get('away_team')}")
 
         if result is None:
             continue
@@ -318,9 +359,11 @@ def check_and_update_cs2_results() -> int:
 
         # ── Карты обновление ─────────────────────────────────────────────────
         for game in result.get("maps", []):
-            map_name    = game["map"]
-            map_winner  = game["winner"]
-            map_loser   = away if map_winner == home else home
+            map_name   = game.get("map")
+            map_winner = game.get("winner")
+            if not map_name or not map_winner:
+                continue
+            map_loser = away if map_winner == home else home
             update_map_stats(map_winner, map_name, won=True)
             update_map_stats(map_loser,  map_name, won=False)
 

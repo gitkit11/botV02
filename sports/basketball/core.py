@@ -160,9 +160,15 @@ def _get_elo(team: str, league_key: str = "") -> int:
 
 
 def _fetch_recent_scores(league_key: str) -> list:
-    """Загружает результаты последних 3 дней из The Odds API /scores/."""
+    """Загружает результаты последних 3 дней из The Odds API /scores/ (с кешем 15 мин)."""
     if not THE_ODDS_API_KEY:
         return []
+    try:
+        from odds_cache import get_scores as _get_scores
+        all_scores = _get_scores(league_key, days_from=3)
+        return [m for m in all_scores if m.get("completed")]
+    except ImportError:
+        pass
     try:
         r = requests.get(
             f"https://api.the-odds-api.com/v4/sports/{league_key}/scores/",
@@ -266,83 +272,160 @@ def elo_win_prob(home: str, away: str, league_key: str = "") -> tuple:
 
 
 def get_basketball_matches(league_key: str) -> list:
-    """Загружает матчи из The Odds API для баскетбола."""
+    """Загружает матчи из The Odds API для баскетбола (с кешем, все регионы)."""
     if not THE_ODDS_API_KEY:
         return []
     try:
-        r = requests.get(
-            f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/",
-            params={
-                "apiKey":      THE_ODDS_API_KEY,
-                "regions":     "eu",
-                "markets":     "h2h,totals,spreads",
-                "oddsFormat":  "decimal",
-            },
-            timeout=12,
-        )
-        if not r.ok:
-            logger.warning(f"[Basketball] {league_key} → {r.status_code}")
+        from odds_cache import get_odds as _get_odds
+        raw = _get_odds(league_key, markets="h2h,totals,spreads")
+    except ImportError:
+        try:
+            r = requests.get(
+                f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/",
+                params={"apiKey": THE_ODDS_API_KEY, "regions": "eu,uk,us,au",
+                        "markets": "h2h,totals,spreads", "oddsFormat": "decimal"},
+                timeout=12,
+            )
+            raw = r.json() if r.ok else []
+        except Exception as e:
+            logger.error(f"[Basketball] Ошибка {league_key}: {e}")
             return []
 
-        now    = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(hours=2)).isoformat()[:19]
-        matches = [m for m in r.json() if m.get("commence_time", "") > cutoff]
-        logger.info(f"[Basketball] {league_key}: {len(matches)} матчей")
-        return matches[:25]
-    except Exception as e:
-        logger.error(f"[Basketball] Ошибка {league_key}: {e}")
+    if not raw:
         return []
+    now    = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=2)).isoformat()[:19]
+    matches = [m for m in raw if m.get("commence_time", "") > cutoff]
+    logger.info(f"[Basketball] {league_key}: {len(matches)} матчей")
+    return matches[:25]
+
+
+SHARP_BOOKS_BBALL = {"pinnacle", "betfair_ex", "betfair", "matchbook",
+                     "smarkets", "lowvig", "betsson", "nordicbet"}
 
 
 def get_basketball_odds(match: dict) -> dict:
-    """Извлекает H2H, тотал и фору из матча. Предпочтение Pinnacle."""
+    """
+    Извлекает H2H, тотал и фору из матча.
+    - Pinnacle no-vig вероятности (убирает маржу)
+    - Медиана острых букмекеров (не первый попавшийся)
+    - Все регионы (eu, uk, us, au) через odds_cache
+    """
+    import statistics
+
+    home_team = match.get("home_team", "")
+    away_team = match.get("away_team", "")
+
     result = {
         "home_win": 0.0, "away_win": 0.0,
         "over": 0.0, "under": 0.0, "total_line": 0.0,
         "spread_home": 0.0, "spread_home_odds": 0.0,
         "spread_away": 0.0, "spread_away_odds": 0.0,
         "bookmaker": "",
+        # Новые поля
+        "no_vig_home": 0.0, "no_vig_away": 0.0,
+        "pinnacle_home": 0.0, "pinnacle_away": 0.0,
+        "bookmakers_count": 0,
     }
 
-    PREFERRED = ["pinnacle", "betfair", "betsson", "1xbet", "unibet"]
-    def _pri(bm):
-        n = bm.get("key", "").lower()
-        for i, p in enumerate(PREFERRED):
-            if p in n:
-                return i
-        return 99
+    all_home_odds: list = []   # коэффициенты всех букмекеров
+    all_away_odds: list = []
+    sharp_home_odds: list = [] # только острые
+    sharp_away_odds: list = []
+    pinnacle_home = 0.0
+    pinnacle_away = 0.0
 
-    bookmakers = sorted(match.get("bookmakers", []), key=_pri)
+    total_found   = False
+    spreads_found = False
+
+    bookmakers = match.get("bookmakers", [])
+    result["bookmakers_count"] = len(bookmakers)
+
     for bm in bookmakers:
+        bm_key   = bm.get("key", "").lower()
         bm_title = bm.get("title", "")
-        for market in bm.get("markets", []):
-            if market["key"] == "h2h" and result["home_win"] == 0:
-                for o in market["outcomes"]:
-                    p = float(o.get("price", 0))
-                    if p < 1.02:
-                        continue
-                    if o["name"] == match.get("home_team"):
-                        result["home_win"] = p
-                        result["bookmaker"] = bm_title
-                    elif o["name"] == match.get("away_team"):
-                        result["away_win"] = p
+        is_sharp = any(s in bm_key for s in SHARP_BOOKS_BBALL)
 
-            elif market["key"] == "totals" and result["over"] == 0:
-                for o in market["outcomes"]:
+        for market in bm.get("markets", []):
+            mkey = market.get("key", "")
+
+            if mkey == "h2h":
+                oc = {o["name"]: float(o.get("price", 0) or 0)
+                      for o in market.get("outcomes", [])}
+                ph = oc.get(home_team, 0.0)
+                pa = oc.get(away_team, 0.0)
+                if ph >= 1.02 and pa >= 1.02:
+                    all_home_odds.append(ph)
+                    all_away_odds.append(pa)
+                    if is_sharp:
+                        sharp_home_odds.append(ph)
+                        sharp_away_odds.append(pa)
+                    if "pinnacle" in bm_key and pinnacle_home == 0.0:
+                        pinnacle_home = ph
+                        pinnacle_away = pa
+
+            elif mkey == "totals" and not total_found and is_sharp:
+                for o in market.get("outcomes", []):
                     if o.get("name") == "Over":
                         result["over"]       = float(o.get("price", 0))
                         result["total_line"] = float(o.get("point", 0))
                     elif o.get("name") == "Under":
                         result["under"] = float(o.get("price", 0))
+                if result["over"] and result["under"]:
+                    total_found = True
 
-            elif market["key"] == "spreads" and result["spread_home"] == 0:
-                for o in market["outcomes"]:
-                    if o["name"] == match.get("home_team"):
+            elif mkey == "spreads" and not spreads_found and is_sharp:
+                for o in market.get("outcomes", []):
+                    if o.get("name") == home_team:
                         result["spread_home"]      = float(o.get("point", 0))
                         result["spread_home_odds"] = float(o.get("price", 0))
-                    elif o["name"] == match.get("away_team"):
+                    elif o.get("name") == away_team:
                         result["spread_away"]      = float(o.get("point", 0))
                         result["spread_away_odds"] = float(o.get("price", 0))
+                if result["spread_home_odds"]:
+                    spreads_found = True
+
+    # Totals/spreads fallback: если у острых не нашли — берём любой
+    if not total_found:
+        for bm in bookmakers:
+            for market in bm.get("markets", []):
+                if market.get("key") == "totals" and not result["over"]:
+                    for o in market.get("outcomes", []):
+                        if o.get("name") == "Over":
+                            result["over"]       = float(o.get("price", 0))
+                            result["total_line"] = float(o.get("point", 0))
+                        elif o.get("name") == "Under":
+                            result["under"] = float(o.get("price", 0))
+
+    if not spreads_found:
+        for bm in bookmakers:
+            for market in bm.get("markets", []):
+                if market.get("key") == "spreads" and not result["spread_home_odds"]:
+                    for o in market.get("outcomes", []):
+                        if o.get("name") == home_team:
+                            result["spread_home"]      = float(o.get("point", 0))
+                            result["spread_home_odds"] = float(o.get("price", 0))
+                        elif o.get("name") == away_team:
+                            result["spread_away"]      = float(o.get("point", 0))
+                            result["spread_away_odds"] = float(o.get("price", 0))
+
+    # Медиана острых букмекеров → основные коэффициенты H2H
+    pool_h = sharp_home_odds if sharp_home_odds else all_home_odds
+    pool_a = sharp_away_odds if sharp_away_odds else all_away_odds
+    if pool_h and pool_a:
+        result["home_win"] = round(statistics.median(pool_h), 3)
+        result["away_win"] = round(statistics.median(pool_a), 3)
+        result["bookmaker"] = "median_sharp" if sharp_home_odds else "median_all"
+
+    # Pinnacle no-vig
+    if pinnacle_home >= 1.02 and pinnacle_away >= 1.02:
+        imp_h = 1 / pinnacle_home
+        imp_a = 1 / pinnacle_away
+        total_imp = imp_h + imp_a
+        result["no_vig_home"]   = round(imp_h / total_imp, 4)
+        result["no_vig_away"]   = round(imp_a / total_imp, 4)
+        result["pinnacle_home"] = pinnacle_home
+        result["pinnacle_away"] = pinnacle_away
 
     return result
 
@@ -353,11 +436,13 @@ def _implied_prob(odds: float) -> float:
 
 def calculate_basketball_win_prob(home: str, away: str,
                                    odds: dict = None,
-                                   league_key: str = "") -> dict:
+                                   league_key: str = "",
+                                   no_vig_home: float = 0.0,
+                                   no_vig_away: float = 0.0) -> dict:
     """
     Финальная вероятность победы:
       ELO 35% + Bookmaker Odds 35% + Form/Context 15% + Home Court 15%
-      + back-to-back штраф -5% если команда играла вчера
+      Если есть Pinnacle no-vig — блендируем: model×0.50 + no_vig×0.50
     """
     # Загружаем актуальные веса из signal_engine если есть
     weight_elo  = 0.35
@@ -375,16 +460,22 @@ def calculate_basketball_win_prob(home: str, away: str,
 
     h_elo_prob, a_elo_prob = elo_win_prob(home, away, league_key)
 
-    # Implied probability из коэффициентов (убираем маржу)
-    h_imp = _implied_prob(odds.get("home_win", 0) if odds else 0)
-    a_imp = _implied_prob(odds.get("away_win", 0) if odds else 0)
-    if h_imp > 0 and a_imp > 0:
-        total_imp   = h_imp + a_imp
-        h_odds_prob = h_imp / total_imp
-        a_odds_prob = a_imp / total_imp
+    # Приоритет: Pinnacle no-vig → медианные коэффициенты → ELO
+    if no_vig_home > 0.05 and no_vig_away > 0.05:
+        # No-vig уже без маржи — используем напрямую
+        h_odds_prob = no_vig_home
+        a_odds_prob = no_vig_away
     else:
-        h_odds_prob = h_elo_prob
-        a_odds_prob = a_elo_prob
+        # Implied probability из медианных коэффициентов (убираем маржу)
+        h_imp = _implied_prob(odds.get("home_win", 0) if odds else 0)
+        a_imp = _implied_prob(odds.get("away_win", 0) if odds else 0)
+        if h_imp > 0 and a_imp > 0:
+            total_imp   = h_imp + a_imp
+            h_odds_prob = h_imp / total_imp
+            a_odds_prob = a_imp / total_imp
+        else:
+            h_odds_prob = h_elo_prob
+            a_odds_prob = a_elo_prob
 
     # Форма команд
     h_form = get_team_form(home, league_key)
@@ -473,8 +564,14 @@ def calculate_basketball_win_prob(home: str, away: str,
 
 def _analyze_total(h_prob: float, a_prob: float, odds: dict, elo_gap: int) -> dict:
     """
-    Анализ тотала (Over/Under).
-    Равные команды → Over. Явный фаворит → Under.
+    Анализ тотала (Over/Under) с реальным EV.
+
+    Вероятность Over/Under считается из:
+    1. No-vig вероятность из котировок (убираем маржу букмекера)
+    2. Корректировка нашей модели: ±3-5% в зависимости от ELO-разрыва и баланса команд
+    3. EV = наша вероятность × кэф − 1
+
+    Рекомендуем ставить только при EV > 3%.
     """
     if not odds or not odds.get("total_line"):
         return {}
@@ -483,32 +580,68 @@ def _analyze_total(h_prob: float, a_prob: float, odds: dict, elo_gap: int) -> di
     over  = odds["over"]
     under = odds["under"]
 
-    if not over or not under:
+    if not over or not under or over < 1.02 or under < 1.02:
         return {}
 
-    balance = 1 - abs(h_prob - a_prob) * 2
+    # No-vig вероятности из котировок (убираем маржу)
+    imp_over  = 1 / over
+    imp_under = 1 / under
+    total_imp = imp_over + imp_under
+    nv_over  = imp_over  / total_imp  # истинная рыночная вероятность Over
+    nv_under = imp_under / total_imp  # истинная рыночная вероятность Under
 
-    if balance > 0.8:
-        lean   = "Over"
-        reason = "Равные команды — обе будут атаковать"
+    # Модельная корректировка: ELO-разрыв + баланс команд влияют на темп
+    # Сильный фаворит (ELO gap > 150) → удерживает темп → лёгкий сдвиг к Under
+    # Равные команды → открытый баскетбол → лёгкий сдвиг к Over
+    gap_adj  = 0.0
+    strength_gap = abs(h_prob - a_prob)
+
+    if abs(elo_gap) > 200:
+        gap_adj = -0.03   # явный фаворит → Under
     elif abs(elo_gap) > 150:
-        lean   = "Under"
-        reason = "Явный фаворит контролирует темп"
-    else:
-        lean   = "Over" if over <= under else "Under"
-        reason = "Небольшой перекос линии"
+        gap_adj = -0.015
+    elif strength_gap < 0.08:
+        gap_adj = +0.02   # очень равные → Over
 
-    lean_odds = over if lean == "Over" else under
-    lean_prob = 0.52 if balance > 0.8 else 0.51
-    lean_ev   = round((lean_prob * lean_odds - 1) * 100, 1)
+    # Наша вероятность Over = рыночная ± небольшая поправка
+    our_over  = max(0.30, min(0.70, nv_over  + gap_adj))
+    our_under = 1.0 - our_over
+
+    # EV для обеих сторон
+    ev_over  = round((our_over  * over  - 1) * 100, 1)
+    ev_under = round((our_under * under - 1) * 100, 1)
+
+    # Выбираем сторону с лучшим EV
+    if ev_over >= ev_under and ev_over > 3.0:
+        lean      = "Over"
+        lean_odds = over
+        lean_prob = our_over
+        lean_ev   = ev_over
+        reason    = f"Равные команды — открытый баскетбол" if strength_gap < 0.08 else f"Рыночная перекос: линия давит на Over"
+    elif ev_under > ev_over and ev_under > 3.0:
+        lean      = "Under"
+        lean_odds = under
+        lean_prob = our_under
+        lean_ev   = ev_under
+        reason    = f"Явный фаворит (ELO разрыв {abs(elo_gap)}) удержит низкий темп" if abs(elo_gap) > 150 else f"Рыночная перекос: линия давит на Under"
+    else:
+        # Нет ценности — просто информируем
+        lean      = "Over" if nv_over >= nv_under else "Under"
+        lean_odds = over if lean == "Over" else under
+        lean_prob = nv_over if lean == "Over" else nv_under
+        lean_ev   = ev_over if lean == "Over" else ev_under
+        reason    = "Нет ценности — рынок сбалансирован"
 
     return {
         "line":       line,
         "lean":       lean,
-        "lean_odds":  lean_odds,
+        "lean_odds":  round(lean_odds, 2),
         "lean_ev":    lean_ev,
         "lean_prob":  round(lean_prob * 100, 1),
         "reason":     reason,
         "over_odds":  over,
         "under_odds": under,
+        "nv_over":    round(nv_over * 100, 1),
+        "nv_under":   round(nv_under * 100, 1),
+        "has_value":  lean_ev > 3.0,
     }

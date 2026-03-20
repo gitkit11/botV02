@@ -83,16 +83,23 @@ def get_finished_basketball_matches() -> list:
         results = []
         for league in BASKETBALL_LEAGUES:
             try:
-                r = requests.get(
-                    f"https://api.the-odds-api.com/v4/sports/{league}/scores/",
-                    params={"apiKey": api_key, "daysFrom": 2},
-                    timeout=12,
-                )
-                if not r.ok:
-                    logger.warning(f"[Basketball Tracker] {league}: {r.status_code}")
-                    continue
+                # Используем odds_cache — не тратим лишние запросы
+                raw_scores = []
+                try:
+                    from odds_cache import get_scores as _get_scores
+                    raw_scores = _get_scores(league, days_from=2)
+                except ImportError:
+                    r = requests.get(
+                        f"https://api.the-odds-api.com/v4/sports/{league}/scores/",
+                        params={"apiKey": api_key, "daysFrom": 2},
+                        timeout=12,
+                    )
+                    if not r.ok:
+                        logger.warning(f"[Basketball Tracker] {league}: {r.status_code}")
+                        continue
+                    raw_scores = r.json()
 
-                for m in r.json():
+                for m in raw_scores:
                     if not m.get("completed"):
                         continue
                     scores = m.get("scores") or []

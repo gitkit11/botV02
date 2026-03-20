@@ -175,21 +175,41 @@ def calculate_cs2_win_prob(home_team, away_team,
     )
     final_h = max(0.05, min(0.95, final_h))
 
+    # Оцениваем реальное наличие данных (0.0 = нет ничего, 1.0 = полные данные)
+    h_name_norm = normalize_team_name(home_team)
+    a_name_norm = normalize_team_name(away_team)
+    h_elo_known = h_name_norm in CS2_ELO
+    a_elo_known = a_name_norm in CS2_ELO
+    h_ps_known  = h_stats.get("matches", 0) > 0
+    a_ps_known  = a_stats.get("matches", 0) > 0
+    h_hltv_known = len(home_players) > 0
+    a_hltv_known = len(away_players) > 0
+    data_confidence = round(
+        (0.15 if h_elo_known  else 0) +
+        (0.15 if a_elo_known  else 0) +
+        (0.15 if h_ps_known   else 0) +
+        (0.15 if a_ps_known   else 0) +
+        (0.20 if h_hltv_known else 0) +
+        (0.20 if a_hltv_known else 0),
+        2
+    )
+
     return {
-        "home_prob":       round(final_h, 2),
-        "away_prob":       round(1 - final_h, 2),
-        "maps":            map_scores,
-        "veto_log":        veto_log,
-        "home_stats":      h_stats,
-        "away_stats":      a_stats,
-        "home_players":    home_players,
-        "away_players":    away_players,
-        "elo_home":        CS2_ELO.get(home_team, DEFAULT_ELO),
-        "elo_away":        CS2_ELO.get(away_team, DEFAULT_ELO),
-        "h2h":             h2h,
-        "tournament_ctx":  ctx,
-        "home_standin":    h_standin,
-        "away_standin":    a_standin,
+        "home_prob":        round(final_h, 2),
+        "away_prob":        round(1 - final_h, 2),
+        "maps":             map_scores,
+        "veto_log":         veto_log,
+        "home_stats":       h_stats,
+        "away_stats":       a_stats,
+        "home_players":     home_players,
+        "away_players":     away_players,
+        "elo_home":         CS2_ELO.get(home_team, DEFAULT_ELO),
+        "elo_away":         CS2_ELO.get(away_team, DEFAULT_ELO),
+        "h2h":              h2h,
+        "tournament_ctx":   ctx,
+        "home_standin":     h_standin,
+        "away_standin":     a_standin,
+        "data_confidence":  data_confidence,
         "detail": {
             "mis":            round(mis_h, 2),
             "elo":            round(elo_h, 2),
@@ -309,11 +329,15 @@ def format_cs2_full_report(
             maps_reason = totals_data.get("reason", "")
             round_pred = totals_data.get("round_prediction", "")
             round_conf = totals_data.get("round_confidence", 0)
-            if maps_pred and maps_conf >= 52:
-                report += f"📊 *Тотал карт:* {maps_pred} ({maps_conf}%)\n"
+            if maps_pred and maps_conf >= 62:
+                # Проверяем: есть ли реальный кэф (не оценочный)
+                if bookmaker_odds and (bookmaker_odds.get("under_2_5") or bookmaker_odds.get("over_2_5")):
+                    report += f"📊 *Тотал карт:* {maps_pred} ({maps_conf}%)\n"
+                else:
+                    report += f"📊 *Тотал карт (оценка):* {maps_pred} ({maps_conf}%) _(нет букм. линии)_\n"
                 if maps_reason:
                     report += f"   _{maps_reason}_\n"
-            if round_pred and round_conf >= 55:
+            if round_pred and round_conf >= 62:
                 report += f"📊 *Тотал раундов (1-я карта):* {round_pred} ({round_conf}%)\n"
         report += "\n"
     elif totals_data:

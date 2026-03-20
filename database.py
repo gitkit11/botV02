@@ -402,10 +402,29 @@ def init_db():
             sport TEXT NOT NULL,
             prediction_id INTEGER NOT NULL,
             odds REAL,
+            units INTEGER DEFAULT 1,
             created_at TEXT NOT NULL
         );
         """)
+        # Миграция user_bets
+        _ub_cols = [r[1] for r in cursor.execute("PRAGMA table_info(user_bets)").fetchall()]
+        if "units" not in _ub_cols:
+            cursor.execute("ALTER TABLE user_bets ADD COLUMN units INTEGER DEFAULT 1")
+        if "notified" not in _ub_cols:
+            cursor.execute("ALTER TABLE user_bets ADD COLUMN notified INTEGER DEFAULT 0")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_bets_user ON user_bets(user_id)")
+
+        # Таблица действий пользователей
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_actions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            action     TEXT NOT NULL,
+            ts         TEXT NOT NULL
+        );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_actions_user ON user_actions(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_actions_ts   ON user_actions(ts)")
 
         # Миграция tennis bet_signal
         _t_cols = [r[1] for r in cursor.execute("PRAGMA table_info(tennis_predictions)").fetchall()]
@@ -470,6 +489,13 @@ def save_prediction(
     away_player_ratings: Optional[List[float]] = None,
     model_weights_at_prediction: Optional[Dict] = None,
     prediction_data: Optional[Dict] = None,
+    # Basketball specific
+    total_line: Optional[float] = None,
+    total_lean: Optional[str] = None,
+    total_lean_odds: Optional[float] = None,
+    total_ev: Optional[float] = None,
+    spread_home: Optional[float] = None,
+    spread_away: Optional[float] = None,
 ):
     """Сохраняет прогноз в соответствующую таблицу базы данных."""
     with _get_db_connection() as conn:
@@ -605,6 +631,12 @@ def save_prediction(
                 'ensemble_best_outcome': ensemble_best_outcome,
                 'bookmaker_odds_home': bookmaker_odds_home,
                 'bookmaker_odds_away': bookmaker_odds_away,
+                'total_line': total_line,
+                'total_lean': total_lean,
+                'total_lean_odds': total_lean_odds,
+                'total_ev': total_ev,
+                'spread_home': spread_home,
+                'spread_away': spread_away,
                 'prediction_data': json.dumps(prediction_data) if prediction_data else '{}',
                 'created_at': current_time,
                 'result_checked_at': None,
@@ -685,14 +717,57 @@ def update_result(
 def get_pending_predictions(sport: str) -> List[Dict]:
     """Возвращает список прогнозов, для которых ещё нет результатов."""
     with _get_db_connection() as conn:
-        conn.row_factory = sqlite3.Row # Для доступа к колонкам по имени
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         table_name = f"{_validate_sport(sport)}_predictions"
         cursor.execute(f"SELECT * FROM {table_name} WHERE real_outcome IS NULL")
         return [dict(row) for row in cursor.fetchall()]
 
+
+def expire_stale_predictions(days: int = 4) -> int:
+    """
+    Помечает как 'expired' прогнозы старше N дней без результата.
+    Это предотвращает бесконечный рост 'ожидают результата'.
+    """
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    sports = ["football", "cs2", "tennis", "basketball"]
+    total_expired = 0
+    with _get_db_connection() as conn:
+        for sport in sports:
+            try:
+                table = f"{sport}_predictions"
+                cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+                if not cols:
+                    continue
+                cur = conn.execute(
+                    f"UPDATE {table} SET real_outcome='expired', is_correct=-1 "
+                    f"WHERE real_outcome IS NULL AND created_at < ?",
+                    (cutoff,)
+                )
+                if cur.rowcount:
+                    total_expired += cur.rowcount
+                    logging.getLogger(__name__).info(
+                        f"[DB] Expired {cur.rowcount} stale {sport} predictions (>{days}d)"
+                    )
+            except Exception:
+                pass
+        conn.commit()
+    return total_expired
+
+# ── Кеш get_statistics() — результаты не меняются чаще раза в 2 минуты ──────
+import time as _stats_time
+_stats_cache: dict = {}
+_stats_cache_ts: dict = {}
+_STATS_TTL = 120  # 2 минуты
+
 def get_statistics(sport: Optional[str] = None) -> Dict:
-    """Возвращает статистику по прогнозам. Если sport не указан, возвращает общую статистику."""
+    """Возвращает статистику по прогнозам (с кешем 2 мин). Если sport не указан — общая."""
+    cache_key = sport or "__all__"
+    now = _stats_time.time()
+    if cache_key in _stats_cache and (now - _stats_cache_ts.get(cache_key, 0)) < _STATS_TTL:
+        return _stats_cache[cache_key]
     stats = {}
     sports_to_check = [sport] if sport else ['football', 'cs2', 'tennis', 'basketball']
 
@@ -709,10 +784,12 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
                 continue
 
             try:
-                # Общая статистика
+                # Общая статистика (expired = -1 не считается как checked)
                 total = cursor.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
                 correct = cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_correct = 1").fetchone()[0]
-                total_checked = cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_correct IS NOT NULL").fetchone()[0]
+                total_checked = cursor.execute(
+                    f"SELECT COUNT(*) FROM {table_name} WHERE is_correct IN (0, 1)"
+                ).fetchone()[0]
 
                 # Статистика по Value Bets
                 cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({table_name})").fetchall()]
@@ -792,6 +869,8 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
                 import logging as _log
                 _log.getLogger(__name__).warning(f"[DB] get_statistics {s} error: {_stat_err}")
 
+    _stats_cache[cache_key] = stats
+    _stats_cache_ts[cache_key] = _stats_time.time()
     return stats
 
 
@@ -827,18 +906,33 @@ def track_analysis(user_id: int, sport: str):
         conn.commit()
 
 
+# ── Кеш профилей — каждый клик не должен открывать новое соединение ─────────
+_user_profile_cache: dict = {}  # user_id → (ts, profile_dict)
+_USER_PROFILE_TTL = 30  # 30 секунд достаточно — профиль меняется редко
+
+def _invalidate_user_cache(user_id: int):
+    """Сбрасывает кеш профиля при изменении данных пользователя."""
+    _user_profile_cache.pop(user_id, None)
+
 def get_user_profile(user_id: int) -> Optional[Dict]:
-    """Возвращает профиль пользователя или None если не найден."""
+    """Возвращает профиль пользователя (с кешем 30 сек)."""
+    now = _stats_time.time()
+    cached = _user_profile_cache.get(user_id)
+    if cached and (now - cached[0]) < _USER_PROFILE_TTL:
+        return cached[1]
     with _get_db_connection() as conn:
         row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        return dict(row) if row else None
+        result = dict(row) if row else None
+    _user_profile_cache[user_id] = (now, result)
+    return result
 
 
 def get_user_language(user_id: int) -> str:
     """Возвращает язык пользователя (ru/en), по умолчанию ru."""
-    with _get_db_connection() as conn:
-        row = conn.execute("SELECT language FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        return (row["language"] or "ru") if row else "ru"
+    profile = get_user_profile(user_id)  # из кеша
+    if profile:
+        return profile.get("language") or "ru"
+    return "ru"
 
 
 def set_user_language(user_id: int, lang: str):
@@ -850,6 +944,7 @@ def set_user_language(user_id: int, lang: str):
             (user_id, lang)
         )
         conn.commit()
+    _invalidate_user_cache(user_id)
 
 
 def set_user_bankroll(user_id: int, amount: float):
@@ -861,15 +956,95 @@ def set_user_bankroll(user_id: int, amount: float):
             (user_id, amount)
         )
         conn.commit()
+    _invalidate_user_cache(user_id)
 
 
 def get_user_bankroll(user_id: int) -> Optional[float]:
-    """Возвращает банк пользователя или None."""
+    """Возвращает банк пользователя (из кеша профиля)."""
+    profile = get_user_profile(user_id)
+    if profile:
+        return profile.get("bankroll")
+    return None
+
+
+def log_action(user_id: int, action: str, username: str = ""):
+    """Логирует действие пользователя. Не блокирует — fire-and-forget."""
+    import logging as _logging
+    _log = _logging.getLogger("chimera.users")
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        with _get_db_connection() as conn:
+            # Получаем username если не передан
+            if not username:
+                row = conn.execute("SELECT username, first_name FROM users WHERE user_id=?", (user_id,)).fetchone()
+                if row:
+                    username = row[0] or row[1] or str(user_id)
+            conn.execute(
+                "INSERT INTO user_actions (user_id, action, ts) VALUES (?, ?, ?)",
+                (user_id, action, now)
+            )
+            conn.execute(
+                "UPDATE users SET last_active = ? WHERE user_id = ?",
+                (now, user_id)
+            )
+            conn.commit()
+        _log.info(f"[USER] {username or user_id} → {action}")
+    except Exception:
+        pass  # не ломаем бота из-за логирования
+
+
+def get_admin_stats() -> dict:
+    """Возвращает статистику для /admin панели."""
     with _get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT bankroll FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        return row[0] if row else None
+        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        day_ago  = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=1)).isoformat()
+        week_ago = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=7)).isoformat()
+
+        active_today = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM users WHERE last_active >= ?", (day_ago,)
+        ).fetchone()[0]
+        active_week = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM users WHERE last_active >= ?", (week_ago,)
+        ).fetchone()[0]
+        new_today = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE first_seen >= ?", (day_ago,)
+        ).fetchone()[0]
+        new_week = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE first_seen >= ?", (week_ago,)
+        ).fetchone()[0]
+
+        # Топ-10 активных
+        top_users = conn.execute("""
+            SELECT user_id, username, first_name, analyses_total, last_active
+            FROM users ORDER BY analyses_total DESC LIMIT 10
+        """).fetchall()
+
+        # Последние действия (30 записей)
+        last_actions = conn.execute("""
+            SELECT ua.ts, ua.user_id, u.username, u.first_name, ua.action
+            FROM user_actions ua
+            LEFT JOIN users u ON ua.user_id = u.user_id
+            ORDER BY ua.ts DESC LIMIT 30
+        """).fetchall()
+
+        # Популярные разделы за неделю
+        popular = conn.execute("""
+            SELECT action, COUNT(*) as cnt
+            FROM user_actions WHERE ts >= ?
+            GROUP BY action ORDER BY cnt DESC LIMIT 10
+        """, (week_ago,)).fetchall()
+
+    return {
+        "total_users":   total_users,
+        "active_today":  active_today,
+        "active_week":   active_week,
+        "new_today":     new_today,
+        "new_week":      new_week,
+        "top_users":     [dict(r) for r in top_users],
+        "last_actions":  [dict(r) for r in last_actions],
+        "popular":       [dict(r) for r in popular],
+    }
 
 
 def get_pl_stats(days: int = 30) -> dict:
@@ -959,20 +1134,137 @@ def get_pl_stats(days: int = 30) -> dict:
     }
 
 
-def mark_user_bet(user_id: int, sport: str, prediction_id: int, odds: float = 0.0):
+def get_unnotified_bets() -> list:
+    """
+    Возвращает ставки пользователей у которых уже есть результат, но уведомление ещё не отправлено.
+    """
+    sport_tables = {
+        "football": "football_predictions",
+        "cs2": "cs2_predictions",
+        "tennis": "tennis_predictions",
+        "basketball": "basketball_predictions",
+    }
+    result = []
+    with _get_db_connection() as conn:
+        for sport, table in sport_tables.items():
+            try:
+                rows = conn.execute(f"""
+                    SELECT ub.id, ub.user_id, ub.sport, ub.prediction_id, ub.odds, ub.units,
+                           p.home_team, p.away_team, p.recommended_outcome, p.real_outcome,
+                           p.bookmaker_odds_home, p.bookmaker_odds_away,
+                           p.ensemble_home, p.ensemble_away
+                    FROM user_bets ub
+                    JOIN {table} p ON p.id = ub.prediction_id
+                    WHERE ub.sport = ? AND ub.notified = 0
+                      AND p.real_outcome IS NOT NULL
+                      AND p.real_outcome NOT IN ('', 'expired')
+                """, (sport,)).fetchall()
+                for row in rows:
+                    result.append(dict(zip(
+                        ["bet_id","user_id","sport","prediction_id","odds","units",
+                         "home","away","rec_outcome","real_outcome","odds_home","odds_away",
+                         "ensemble_home","ensemble_away"],
+                        row
+                    )))
+            except Exception:
+                continue
+    return result
+
+
+def mark_bet_notified(bet_id: int):
+    """Помечает ставку как уведомлённую."""
+    with _get_db_connection() as conn:
+        conn.execute("UPDATE user_bets SET notified=1 WHERE id=?", (bet_id,))
+        conn.commit()
+
+
+def get_recent_signal_streak() -> int:
+    """
+    Возвращает текущую серию проигрышей подряд среди сигналов СТАВИТЬ.
+    Положительное = серия побед, отрицательное = серия поражений.
+    """
+    tables = ["football_predictions", "cs2_predictions", "tennis_predictions", "basketball_predictions"]
+    all_results = []
+    with _get_db_connection() as conn:
+        for table in tables:
+            try:
+                rows = conn.execute(f"""
+                    SELECT is_correct, created_at FROM {table}
+                    WHERE bet_signal='СТАВИТЬ' AND real_outcome IS NOT NULL
+                      AND real_outcome NOT IN ('', 'expired') AND is_correct IS NOT NULL
+                    ORDER BY created_at DESC LIMIT 10
+                """).fetchall()
+                all_results.extend(rows)
+            except Exception:
+                continue
+    if not all_results:
+        return 0
+    all_results.sort(key=lambda x: x[1], reverse=True)
+    streak = 0
+    first = all_results[0][0]
+    for is_correct, _ in all_results:
+        if is_correct == first:
+            streak += 1
+        else:
+            break
+    return streak if first == 1 else -streak
+
+
+def get_chimera_signal_history(limit: int = 10) -> list:
+    """
+    История сигналов дня (match_id начинается с 'chimera_').
+    Возвращает список dict: home, away, sport, is_correct, odds, created_at, real_outcome.
+    """
+    tables = [
+        ("football_predictions",   "football"),
+        ("cs2_predictions",        "cs2"),
+        ("tennis_predictions",     "tennis"),
+        ("basketball_predictions", "basketball"),
+    ]
+    rows = []
+    with _get_db_connection() as conn:
+        for table, sport in tables:
+            try:
+                cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+                odds_col = ("bookmaker_odds_home" if "bookmaker_odds_home" in cols else "NULL")
+                res = conn.execute(f"""
+                    SELECT home_team, away_team, is_correct,
+                           {odds_col} as odds,
+                           created_at, real_outcome, recommended_outcome
+                    FROM {table}
+                    WHERE match_id LIKE 'chimera_%'
+                    ORDER BY created_at DESC LIMIT {limit}
+                """).fetchall()
+                for r in res:
+                    rows.append({
+                        "sport":       sport,
+                        "home":        r[0],
+                        "away":        r[1],
+                        "is_correct":  r[2],
+                        "odds":        r[3],
+                        "created_at":  r[4],
+                        "real_outcome": r[5],
+                        "rec":         r[6],
+                    })
+            except Exception:
+                continue
+    rows.sort(key=lambda x: x["created_at"] or "", reverse=True)
+    return rows[:limit]
+
+
+def mark_user_bet(user_id: int, sport: str, prediction_id: int, odds: float = 0.0, units: int = 1):
     """Записывает ставку пользователя на прогноз в его личную историю."""
     current_time = datetime.now(timezone.utc).isoformat()
     with _get_db_connection() as conn:
-        # Проверяем, не нажимал ли уже (защита от двойного нажатия)
         existing = conn.execute(
             "SELECT id FROM user_bets WHERE user_id=? AND sport=? AND prediction_id=?",
             (user_id, sport, prediction_id)
         ).fetchone()
         if existing:
-            return False  # уже записано
+            return False
         conn.execute(
-            "INSERT INTO user_bets (user_id, sport, prediction_id, odds, created_at) VALUES (?,?,?,?,?)",
-            (user_id, sport, prediction_id, odds, current_time)
+            "INSERT INTO user_bets (user_id, sport, prediction_id, odds, units, created_at) VALUES (?,?,?,?,?,?)",
+            (user_id, sport, prediction_id, odds, units, current_time)
         )
         conn.commit()
         return True
@@ -980,8 +1272,10 @@ def mark_user_bet(user_id: int, sport: str, prediction_id: int, odds: float = 0.
 
 def get_user_pl_stats(user_id: int, days: int = 30) -> dict:
     """
-    Считает личную P&L статистику пользователя за последние N дней.
-    Только те матчи, где пользователь нажал 'Я поставил' и есть real_outcome.
+    Личная P&L статистика пользователя.
+    Считает реальный профит в % банка с учётом юнитов и кэфа.
+    1u = 1% банка, 2u = 2%, 3u = 3%.
+    Выигрыш = units% * (odds-1), Проигрыш = -units%
     """
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     sport_tables = {
@@ -990,97 +1284,82 @@ def get_user_pl_stats(user_id: int, days: int = 30) -> dict:
         "tennis": "tennis_predictions",
         "basketball": "basketball_predictions",
     }
-    all_bets = []
+
+    settled = []   # завершённые ставки
+    pending = 0    # ждут результата
+
     with _get_db_connection() as conn:
         for sport, table in sport_tables.items():
             try:
                 rows = conn.execute(f"""
-                    SELECT p.recommended_outcome, p.real_outcome,
-                           p.bookmaker_odds_home, p.bookmaker_odds_away,
-                           ub.odds, ub.created_at
+                    SELECT p.home_team, p.away_team, p.recommended_outcome,
+                           p.real_outcome, p.bookmaker_odds_home, p.bookmaker_odds_away,
+                           ub.odds, ub.units, ub.created_at
                     FROM user_bets ub
                     JOIN {table} p ON p.id = ub.prediction_id
-                    WHERE ub.user_id = ?
-                      AND ub.sport = ?
-                      AND p.real_outcome IS NOT NULL
-                      AND p.real_outcome != ''
-                      AND p.real_outcome != 'expired'
-                      AND ub.created_at >= ?
-                    ORDER BY ub.created_at ASC
+                    WHERE ub.user_id = ? AND ub.sport = ? AND ub.created_at >= ?
+                    ORDER BY ub.created_at DESC
                 """, (user_id, sport, cutoff)).fetchall()
-                all_bets.extend(rows)
+
+                for row in rows:
+                    home, away, rec, real, oh, oa, ub_odds, units, ts = row
+                    units = units or 1
+                    if not real or real in ('', 'expired'):
+                        pending += 1
+                        continue
+                    odds = float(ub_odds or 0)
+                    if odds < 1.02:
+                        odds = float(oh if rec == "home_win" else oa or 0)
+                    if odds < 1.02:
+                        odds = 1.80
+                    is_win = (rec == real)
+                    profit_pct = units * (odds - 1) if is_win else -float(units)
+                    settled.append({
+                        "sport": sport,
+                        "home": home, "away": away,
+                        "rec": rec, "real": real,
+                        "odds": round(odds, 2),
+                        "units": units,
+                        "profit_pct": round(profit_pct, 2),
+                        "is_win": is_win,
+                        "ts": ts,
+                    })
             except Exception:
                 continue
 
-    if not all_bets:
-        return {"total": 0, "wins": 0, "losses": 0, "roi": 0.0,
-                "profit_units": 0.0, "best_streak": 0, "current_streak": 0, "pending": 0}
+    # Сортируем по дате (новые первые)
+    settled.sort(key=lambda x: x["ts"], reverse=True)
 
-    # Считаем pending (ставки без результата)
-    pending = 0
-    with _get_db_connection() as conn:
-        for sport, table in sport_tables.items():
-            try:
-                r = conn.execute(f"""
-                    SELECT COUNT(*) FROM user_bets ub
-                    JOIN {table} p ON p.id = ub.prediction_id
-                    WHERE ub.user_id = ? AND ub.sport = ?
-                      AND (p.real_outcome IS NULL OR p.real_outcome = '')
-                      AND ub.created_at >= ?
-                """, (user_id, sport, cutoff)).fetchone()
-                pending += r[0] if r else 0
-            except Exception:
-                continue
+    wins = sum(1 for b in settled if b["is_win"])
+    losses = sum(1 for b in settled if not b["is_win"])
+    total_wagered_pct = sum(b["units"] for b in settled)  # % банка поставлено суммарно
+    profit_pct = sum(b["profit_pct"] for b in settled)
+    roi = round(profit_pct / total_wagered_pct * 100, 1) if total_wagered_pct > 0 else 0.0
 
-    wins = losses = 0
-    profit = 0.0
-    best_streak = current_streak = 0
-    streak_sign = None
-
-    for rec_outcome, real_outcome, odds_home, odds_away, ub_odds, _ in all_bets:
-        is_win = (rec_outcome == real_outcome)
-        # Используем сохранённый коэфф ставки пользователя, иначе из букмекера
-        if ub_odds and ub_odds > 1.01:
-            odds = float(ub_odds)
-        elif rec_outcome == "home_win":
-            odds = float(odds_home or 0)
-        elif rec_outcome == "away_win":
-            odds = float(odds_away or 0)
-        else:
-            odds = 0.0
-        if odds < 1.02:
-            odds = 1.85  # fallback
-
-        if is_win:
-            wins += 1
-            profit += (odds - 1)
-            if streak_sign == 'w':
-                current_streak += 1
+    # Текущий стрик
+    streak = 0
+    for b in settled:
+        if b["is_win"]:
+            if streak >= 0:
+                streak += 1
             else:
-                current_streak = 1
-                streak_sign = 'w'
+                break
         else:
-            losses += 1
-            profit -= 1.0
-            if streak_sign == 'l':
-                current_streak += 1
+            if streak <= 0:
+                streak -= 1
             else:
-                current_streak = 1
-                streak_sign = 'l'
-        if streak_sign == 'w' and current_streak > best_streak:
-            best_streak = current_streak
+                break
 
-    total = wins + losses
-    roi = round(profit / total * 100, 1) if total > 0 else 0.0
     return {
-        "total":        total,
+        "total":        len(settled),
         "wins":         wins,
         "losses":       losses,
         "roi":          roi,
-        "profit_units": round(profit, 2),
-        "best_streak":  best_streak,
-        "current_streak": current_streak if streak_sign == 'w' else 0,
+        "profit_pct":   round(profit_pct, 2),   # профит в % от банка
+        "wagered_pct":  round(total_wagered_pct, 1),
+        "streak":       streak,   # >0 = серия побед, <0 = серия поражений
         "pending":      pending,
+        "last_bets":    settled[:5],  # последние 5 ставок для отображения
         "days":         days,
     }
 

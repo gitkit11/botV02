@@ -57,6 +57,7 @@ def run_tennis_gpt_agent(
     h2h_p1_wins: int = 0, h2h_total: int = 0,
     p1_form: str = "", p2_form: str = "",
     p1_rank: int = 100, p2_rank: int = 100,
+    game_totals: dict = None,
 ) -> str:
     """
     GPT-4.1-mini — Стратег.
@@ -76,13 +77,31 @@ def run_tennis_gpt_agent(
     if p2_form and p2_form != "?????":
         form_block += f"\nФорма {player2}: {p2_form}"
 
+    # Блок тоталов с реальной букмекерской линией
+    totals_block = ""
+    if game_totals:
+        line = game_totals.get("line", 22.5)
+        pred = game_totals.get("prediction", "")
+        conf = game_totals.get("confidence", 0)
+        if game_totals.get("has_real_line"):
+            ev = game_totals.get("ev", 0)
+            bm_over = game_totals.get("bm_over_odds", 0)
+            bm_under = game_totals.get("bm_under_odds", 0)
+            totals_block = (
+                f"\nБУКМЕКЕРСКАЯ ЛИНИЯ ТОТАЛА: {line} геймов "
+                f"(Б={bm_over} / М={bm_under})"
+                f"\nМОДЕЛЬ: {pred} {line} ({conf}% уверенности, EV={ev:+.1f}%)"
+            )
+        elif pred:
+            totals_block = f"\nМОДЕЛЬ ТОТАЛА: {pred} {line} ({conf}% уверенности)"
+
     prompt = f"""Ты — профессиональный аналитик тенниса для беттинга. Анализируй строго и честно.
 
 МАТЧ ({tour_upper}): {player1} vs {player2}
 ПОКРЫТИЕ: {surf_ru}
 РЕЙТИНГ: {player1} #{p1_rank} | {player2} #{p2_rank}
 КЭФЫ: {player1}={odds_p1} | {player2}={odds_p2}
-НАШИ ВЕРОЯТНОСТИ: {player1}={round(probs['p1_win']*100)}% | {player2}={round(probs['p2_win']*100)}%{h2h_block}{form_block}
+НАШИ ВЕРОЯТНОСТИ: {player1}={round(probs['p1_win']*100)}% | {player2}={round(probs['p2_win']*100)}%{h2h_block}{form_block}{totals_block}
 
 Дай структурированный анализ:
 
@@ -94,11 +113,9 @@ def run_tennis_gpt_agent(
 
 **ПРОГНОЗ:** [игрок] победит с вероятностью [X%]. Счёт: [2:0 / 2:1]
 
-**ТОТАЛЫ:** Тотал геймов [Больше/Меньше] 22.5 — [почему: играют в атаку или держат подачу?]
+**ТОТАЛЫ:** {f"Линия букмекера {line} геймов — наша модель говорит {pred}. " if game_totals else "Тотал геймов "}[Больше/Меньше] — объясни: темп игры, стиль (подача vs задняя линия), покрытие.
 
-**СТАВКА:** [СТАВИТЬ на X @ кэф Y / ПРОПУСТИТЬ] — причина в 1 предложении
-
-Будь конкретным. Не пиши воду."""
+Будь конкретным. Не пиши воду. Не давай рекомендацию ставить или нет — это решает математическая модель."""
 
     return _call_ai(prompt, _gpt_client, "gpt-4.1-mini")
 
@@ -111,6 +128,7 @@ def run_tennis_llama_agent(
     p1_form: str = "", p2_form: str = "",
     p1_rank: int = 100, p2_rank: int = 100,
     gpt_verdict: str = "",
+    game_totals: dict = None,
 ) -> str:
     """
     Llama 3.3 70B — Независимый тактик.
@@ -126,16 +144,25 @@ def run_tennis_llama_agent(
 
     gpt_block = ""
     if gpt_verdict and not gpt_verdict.startswith("❌"):
-        # Берём только первые 200 символов вердикта GPT
         short = gpt_verdict[:200].replace('\n', ' ')
         gpt_block = f"\n\nМнение GPT (кратко): «{short}...»"
+
+    totals_block = ""
+    if game_totals:
+        line = game_totals.get("line", 22.5)
+        pred = game_totals.get("prediction", "")
+        if game_totals.get("has_real_line"):
+            ev = game_totals.get("ev", 0)
+            totals_block = f"\nБУКМЕКЕРСКАЯ ЛИНИЯ: {line} геймов | Модель: {pred} (EV={ev:+.1f}%)"
+        elif pred:
+            totals_block = f"\nМодель тотала: {pred} {line} геймов"
 
     prompt = f"""Ты — независимый тактический аналитик тенниса. Смотри критически, не копируй чужие выводы.
 
 МАТЧ ({tour_upper}): {player1} vs {player2}
 ПОКРЫТИЕ: {surf_ru}
 РЕЙТИНГ: #{p1_rank} vs #{p2_rank}
-КЭФЫ: {player1}={odds_p1} | {player2}={odds_p2}{h2h_block}{gpt_block}
+КЭФЫ: {player1}={odds_p1} | {player2}={odds_p2}{h2h_block}{totals_block}{gpt_block}
 
 Дай НЕЗАВИСИМУЮ оценку:
 
@@ -145,11 +172,11 @@ def run_tennis_llama_agent(
 
 **КЛЮЧЕВОЙ ФАКТОР:** Один главный аспект, который решит исход матча
 
-**ТОТАЛЫ:** Ожидается ли долгий матч (много геймов) или быстрый разгром?
+**ТОТАЛЫ:** {f"Линия {line} — соглашаешься с моделью ({pred})?" if game_totals else "Ожидается долгий матч или быстрый разгром?"}
 
-**ИТОГ:** [игрок] победит | Уверенность: [X%] | Если не ставить — почему?
+**ИТОГ:** [игрок] победит | Уверенность: [X%]
 
-Если есть серьёзные сомнения — скажи прямо. Не соглашайся с GPT просто так."""
+Если есть серьёзные риски — укажи их прямо. Не соглашайся с GPT просто так. Не давай беттинг-рекомендацию — это решает математическая модель."""
 
     return _call_ai(prompt, _groq_client, "llama-3.3-70b-versatile", timeout=35)
 
@@ -161,13 +188,16 @@ def run_tennis_chimera_agents(
     p1_rank: int = 100, p2_rank: int = 100,
     h2h_p1_wins: int = 0, h2h_total: int = 0,
     p1_form: str = "", p2_form: str = "",
+    gpt_text: str = "",
+    llama_text: str = "",
 ) -> dict:
     """
     Запускает CHIMERA Multi-Agent анализ для теннисного матча.
-    Возвращает dict с результатами агентов и финальным вердиктом.
+    gpt_text / llama_text — уже готовые ответы агентов, передаём в market_verdict
+    чтобы финальный вердикт читал реальный анализ, а не запускал новых агентов.
     """
     try:
-        from chimera_multi_agent import run_all_agents, bayesian_combine, format_verdict_block
+        from chimera_multi_agent import run_agent_market_verdict, bayesian_combine, format_verdict_block
     except ImportError:
         return {}
 
@@ -192,8 +222,22 @@ def run_tennis_chimera_agents(
     bookmaker_odds = {"home": odds_p1, "away": odds_p2}
     favorite = player1 if math_probs["home"] >= math_probs["away"] else player2
 
-    agent_results = run_all_agents("tennis", match_info, math_probs, bookmaker_odds, favorite)
-    final_probs = bayesian_combine(math_probs, agent_results.get("statistician", ""), agent_results.get("skeptic", ""))
+    # Используем уже готовые тексты GPT и Llama как статистик и скептик
+    # Это позволяет market_verdict читать реальный анализ агентов
+    stat_text  = gpt_text   if gpt_text   and not gpt_text.startswith("❌")   else ""
+    skept_text = llama_text if llama_text and not llama_text.startswith("❌") else ""
+
+    market_verdict = run_agent_market_verdict(
+        "tennis", match_info, math_probs, bookmaker_odds, stat_text, skept_text
+    )
+
+    agent_results = {
+        "statistician":  stat_text,
+        "skeptic":       skept_text,
+        "market_verdict": market_verdict,
+    }
+
+    final_probs = bayesian_combine(math_probs, stat_text, skept_text)
     verdict_block = format_verdict_block(agent_results, final_probs, bookmaker_odds, favorite)
 
     return {
@@ -299,7 +343,7 @@ def format_tennis_full_report(
     _gpt = gpt_text[:700] + "…" if gpt_text and len(gpt_text) > 700 else gpt_text
     lines.append(f"")
     lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"🧠 <b>GPT-4.1 (Стратег):</b>")
+    lines.append(f"🦁 <b>Химера (анализ):</b>")
     if _gpt and not _gpt.startswith("❌"):
         lines.append(_gpt)
     else:
@@ -309,7 +353,7 @@ def format_tennis_full_report(
     _llama = llama_text[:700] + "…" if llama_text and len(llama_text) > 700 else llama_text
     lines.append(f"")
     lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"🤖 <b>Llama 3.3 70B (Тактик):</b>")
+    lines.append(f"🌀 <b>Тень (независимый взгляд):</b>")
     if _llama and not _llama.startswith("❌"):
         lines.append(_llama)
     else:

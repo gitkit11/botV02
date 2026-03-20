@@ -26,14 +26,14 @@ def _calc_ev(prob: float, odds: float) -> float:
         return -1.0
     return prob * odds - 1.0
 
-def _kelly(prob: float, odds: float, max_kelly: float = 0.15) -> float:
+def _kelly(prob: float, odds: float, max_kelly: float = 0.10) -> float:
     b = odds - 1
     q = 1 - prob
     k = (prob * b - q) / b if b > 0 else 0
-    return round(max(0.0, min(k, max_kelly)) * 100, 1)
+    return round(max(0.0, min(k * 0.5, max_kelly)) * 100, 1)
 
 def _strength(score: int, max_score: int, ev: float) -> str:
-    ratio = score / max_score
+    ratio = score / max_score if max_score > 0 else 0.0
     if ratio >= 0.85 and ev >= 0.20:
         return "🔥🔥 СИЛЬНЫЙ"
     elif ratio >= 0.70 and ev >= 0.12:
@@ -127,7 +127,9 @@ def check_football_signal(
             checks.append("ИИ не согласен ❌")
         # если None — не считаем
 
-        max_score = 5 if outcome == "Х" else 6  # без формы для ничьей
+        # Х: нет формы (пропуск) + нет ELO (всегда 0/0) = max 4 (prob+ev+odds+ai)
+        # П1/П2: 6 проверок
+        max_score = 4 if outcome == "Х" else 6
 
         if score >= c["min_score"]:
             sig = {
@@ -321,6 +323,10 @@ def format_signal(sig: dict) -> str:
         "",
         f"📊 Вероятность: {sig['prob']}%",
         f"📈 Коэффициент: {sig['odds']}",
+    ]
+    if sig.get("line_movement"):
+        text.append(sig["line_movement"])
+    text += [
         f"💰 Ценность (EV): +{sig['ev']}%",
         f"⚖️ Ставка: {sig['kelly']}% банка ({('3u' if sig['kelly'] >= 4 else '2u' if sig['kelly'] >= 2 else '1u')})",
         "",
@@ -534,30 +540,31 @@ def get_cs2_ranked_bets(
                 })
 
     # ── 2. Тотал карт ────────────────────────────────────────────────────────
+    # Только если есть реальные букмекерские котировки (не фиктивные)
     if totals_data:
         pred = totals_data["prediction"]
         is_under = "UNDER" in pred
         total_prob = totals_data["under_prob"] if is_under else totals_data["over_prob"]
-        # Используем кэф из bookmaker_odds если есть, иначе типичный 1.85
-        if is_under:
-            total_odds = bookmaker_odds.get("under_2_5", bookmaker_odds.get("total_under", 1.85))
-        else:
-            total_odds = bookmaker_odds.get("over_2_5", bookmaker_odds.get("total_over", 1.85))
-
-        ev = total_prob * total_odds - 1
-        kelly = _kelly(total_prob, total_odds)
-        if ev > 0.02:
-            label = f"Тотал карт Меньше 2.5 (завершится 2:0)" if is_under else f"Тотал карт Больше 2.5 (завершится 2:1)"
-            bets.append({
-                "type":     pred,
-                "label":    label,
-                "prob":     round(total_prob * 100, 1),
-                "odds":     total_odds,
-                "ev":       round(ev * 100, 1),
-                "kelly":    kelly,
-                "priority": ev * total_prob,
-                "note":     totals_data.get("reason", ""),
-            })
+        conf = totals_data.get("confidence", 0)
+        real_over  = bookmaker_odds.get("over_2_5", bookmaker_odds.get("total_over", 0))
+        real_under = bookmaker_odds.get("under_2_5", bookmaker_odds.get("total_under", 0))
+        total_odds = real_under if is_under else real_over
+        # Добавляем в ставки только если: реальный кэф И уверенность ≥ 62%
+        if total_odds > 1.02 and conf >= 62:
+            ev = total_prob * total_odds - 1
+            kelly = _kelly(total_prob, total_odds)
+            if ev > 0.02:
+                label = f"Тотал карт Меньше 2.5 (завершится 2:0)" if is_under else f"Тотал карт Больше 2.5 (завершится 2:1)"
+                bets.append({
+                    "type":     pred,
+                    "label":    label,
+                    "prob":     round(total_prob * 100, 1),
+                    "odds":     total_odds,
+                    "ev":       round(ev * 100, 1),
+                    "kelly":    kelly,
+                    "priority": ev * total_prob,
+                    "note":     totals_data.get("reason", ""),
+                })
 
     # ── 3. Фора -1.5 для явного фаворита ─────────────────────────────────────
     # Фора -1.5 выигрывает только при 2:0. P(2:0) ≈ p_under (если фаворит)
