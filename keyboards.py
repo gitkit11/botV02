@@ -37,6 +37,24 @@ def _short(name: str) -> str:
     return _SHORT_NAMES.get(name, name)
 
 
+def _extract_odds(match: dict) -> str:
+    """Извлекает h2h коэффициенты из сырого матча The Odds API."""
+    try:
+        for bm in match.get("bookmakers", []):
+            for mkt in bm.get("markets", []):
+                if mkt.get("key") == "h2h":
+                    outcomes = mkt.get("outcomes", [])
+                    home = match.get("home_team", "")
+                    away = match.get("away_team", "")
+                    h_price = next((o["price"] for o in outcomes if o["name"] == home), 0)
+                    a_price = next((o["price"] for o in outcomes if o["name"] == away), 0)
+                    if h_price and a_price:
+                        return f" {h_price}/{a_price}"
+    except Exception:
+        pass
+    return ""
+
+
 def _escape_md(text: str) -> str:
     """Экранирует спецсимволы для Markdown V1 в Telegram."""
     for ch in ('_', '*', '`', '['):
@@ -70,7 +88,7 @@ def build_main_keyboard(lang: str = "ru"):
         [types.KeyboardButton(text=t("btn_signals", lang)), types.KeyboardButton(text=t("btn_express", lang))],
         [types.KeyboardButton(text=t("btn_football", lang))],
         [types.KeyboardButton(text=t("btn_tennis", lang)), types.KeyboardButton(text=t("btn_cs2", lang))],
-        [types.KeyboardButton(text=t("btn_basketball", lang))],
+        [types.KeyboardButton(text=t("btn_basketball", lang)), types.KeyboardButton(text=t("btn_hockey", lang))],
         [types.KeyboardButton(text=t("btn_hunt", lang))],
         [types.KeyboardButton(text=t("btn_stats", lang)), types.KeyboardButton(text=t("btn_cabinet", lang))],
         [types.KeyboardButton(text=t("btn_vip", lang)), types.KeyboardButton(text=t("btn_support", lang))],
@@ -139,8 +157,9 @@ def build_matches_keyboard(matches, page: int = 0):
         h = _short(match.get('home_team', ''))
         a = _short(match.get('away_team', ''))
         label = _match_status_label(match.get('commence_time', ''))
+        odds_str = _extract_odds(match)
         builder.button(
-            text=f"⚽ {label}  {h} — {a}",
+            text=f"⚽ {label}  {h} — {a}{odds_str}",
             callback_data=f"m_{i}"
         )
 

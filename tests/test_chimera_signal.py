@@ -53,8 +53,10 @@ def test_implied_prob_short_fav():
     assert abs(_implied_prob(1.5) - 1 / 1.5) < 0.001
 
 def test_implied_prob_invalid():
-    assert _implied_prob(0.0) >= 1.0  # не должно давать нормальные значения
-    assert _implied_prob(-1.0) >= 1.0
+    # Невалидные кэфы (≤ 1.02) → 0.0 (не ставим)
+    assert _implied_prob(0.0) == 0.0
+    assert _implied_prob(-1.0) == 0.0
+    assert _implied_prob(1.0) == 0.0
 
 
 # ─── calibrate_probability ────────────────────────────────────────────────────

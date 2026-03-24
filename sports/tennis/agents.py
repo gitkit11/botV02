@@ -304,19 +304,76 @@ def format_tennis_full_report(
     except Exception:
         pass
 
+    # Определяем вердикт и надёжность
+    best_cand = candidates[0] if candidates else None
+
+    # Фаворит (для ПРОПУСТИТЬ тоже нужен)
+    _winner     = player1 if p1_win_pct >= p2_win_pct else player2
+    _winner_pct = max(p1_win_pct, p2_win_pct)
+    _loser_pct  = min(p1_win_pct, p2_win_pct)
+
+    if best_cand and best_cand.get("ev", 0) > 2:
+        _winner_odds = best_cand["odds"]
+        _ev          = best_cand["ev"]
+        _kelly       = best_cand["kelly"]
+        _u           = "3u" if _kelly >= 4 else ("2u" if _kelly >= 2 else "1u")
+        _verdict_hdr = "✅ СТАВИТЬ"
+        _verdict_bet = f"💰 <b>{_winner}</b> @ {_winner_odds} | EV: +{_ev:.1f}% | Банк: {_kelly:.1f}% ({_u})"
+        try:
+            from formatters import reliability_fires as _rf
+            _reliability = _rf(_winner_pct)
+        except Exception:
+            _reliability = "🔥🔥🔥 Высокая"
+    else:
+        _verdict_hdr = "❌ НЕ СТАВИТЬ"
+        # Определяем конкретную причину пропуска
+        try:
+            from config_thresholds import TENNIS_CFG as _tc
+            _fav_odds = float(odds_p2) if _winner == player2 else float(odds_p1)
+            _bk_implied = round(100 / _fav_odds, 1) if _fav_odds > 1 else 0
+            _raw_ev   = _fav_odds * (_winner_pct / 100) - 1
+            if _fav_odds < _tc.get("min_odds", 1.60):
+                _skip_reason = (
+                    f"Кэф {_fav_odds} слишком низкий.\n"
+                    f"Наша модель: {_winner_pct}%, букмекер закладывает {_bk_implied}%.\n"
+                    f"Нет преимущества — такие ставки не окупаются в долгосрок."
+                )
+            elif _raw_ev < _tc.get("min_ev", 0.12):
+                _skip_reason = (
+                    f"Наша модель: {_winner_pct}%, букмекер: {_bk_implied}%.\n"
+                    f"EV {round(_raw_ev*100,1)}% — маржа мала, не перекрывает риск."
+                )
+            elif _winner_pct < _tc.get("min_prob", 0.65) * 100:
+                _skip_reason = (
+                    f"Уверенность {_winner_pct}% недостаточна.\n"
+                    f"Нужно минимум {round(_tc.get('min_prob',0.65)*100)}% для входа."
+                )
+            else:
+                _skip_reason = "Сигналы не набирают минимальный балл для входа"
+        except Exception:
+            _skip_reason = "Условия для ставки не выполнены"
+        _verdict_bet = f"🏆 <b>{_winner}</b> выиграет — но ставить не рекомендуем\n<i>📋 {_skip_reason}</i>"
+        _reliability = "⚠️ Модель уверена — ставки нет"
+
     lines = [
         f"{surf_icon} <b>{tour_upper} {tournament_name} | {surf_name}</b>",
-        f"",
         f"🎾 <b>{player1}</b> (#{p1_rank})  vs  <b>{player2}</b> (#{p2_rank})",
     ]
     if time_str:
         lines.append(time_str)
     lines += [
+        f"💰 {player1}={odds_p1} · {player2}={odds_p2}",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🎯 <b>ВЕРДИКТ: {_verdict_hdr}</b>",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🏆 <b>{_winner}</b> — {_winner_pct}% | {_loser_pct}%",
+        f"{_reliability}",
+        _verdict_bet,
         f"",
-        f"📊 <b>МАТЕМАТИЧЕСКИЙ АНАЛИЗ:</b>",
-        f"⚡ Рейтинговый ELO: {player1}={probs.get('p1_elo', '?')} | {player2}={probs.get('p2_elo', '?')}",
-        f"🎯 Вероятности: <b>{player1} {p1_win_pct}%</b> | <b>{player2} {p2_win_pct}%</b>",
-        f"💰 Коэффициенты: {player1}={odds_p1} | {player2}={odds_p2}",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 <b>АНАЛИЗ:</b>",
+        f"⚡ ELO: {player1}={probs.get('p1_elo', '?')} · {player2}={probs.get('p2_elo', '?')}",
+        f"🎯 Вероятности: <b>{player1} {p1_win_pct}%</b> · <b>{player2} {p2_win_pct}%</b>",
     ]
 
     if h2h_total >= 3:

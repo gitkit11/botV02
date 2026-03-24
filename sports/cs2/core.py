@@ -163,12 +163,43 @@ def calculate_cs2_win_prob(home_team, away_team,
     a_momentum = _momentum(a_form.get("form", ""))
     momentum_adj = (h_momentum - a_momentum)
 
+    # Адаптивные веса — при слабых данных повышаем доверие к ELO (стабильный рейтинг)
+    # data_confidence: 1.0 = полные данные, 0.0 = ничего нет
+    h_name_pre  = normalize_team_name(home_team)
+    a_name_pre  = normalize_team_name(away_team)
+    h_elo_known = h_name_pre in CS2_ELO
+    a_elo_known = a_name_pre in CS2_ELO
+    h_ps_known  = h_stats.get("matches", 0) > 0
+    a_ps_known  = a_stats.get("matches", 0) > 0
+    h_hltv_known = len(home_players) > 0
+    a_hltv_known = len(away_players) > 0
+
+    both_elo  = h_elo_known and a_elo_known
+    both_wr   = h_ps_known  and a_ps_known
+    both_hltv = h_hltv_known and a_hltv_known
+
+    if both_elo and both_wr and both_hltv:
+        # Полные данные — стандартные веса
+        w_mis, w_elo, w_wr, w_rat = 0.25, 0.30, 0.25, 0.20
+    elif both_elo and both_hltv:
+        # Нет PandaScore — MIS + ELO + Rating
+        w_mis, w_elo, w_wr, w_rat = 0.30, 0.40, 0.00, 0.30
+    elif both_elo and both_wr:
+        # Нет HLTV игроков — MIS + ELO + WR
+        w_mis, w_elo, w_wr, w_rat = 0.25, 0.40, 0.35, 0.00
+    elif both_elo:
+        # Только ELO известны — доминирует ELO
+        w_mis, w_elo, w_wr, w_rat = 0.15, 0.60, 0.15, 0.10
+    else:
+        # Совсем нет данных — ELO + MIS 50/50
+        w_mis, w_elo, w_wr, w_rat = 0.30, 0.55, 0.10, 0.05
+
     # Финальный ансамбль
     final_h = (
-        mis_h         * 0.25 +
-        elo_h         * 0.30 +
-        h_wr_norm     * 0.25 +
-        h_rating_norm * 0.20 +
+        mis_h         * w_mis +
+        elo_h         * w_elo +
+        h_wr_norm     * w_wr  +
+        h_rating_norm * w_rat +
         h2h_bonus     +
         standin_adj   +
         momentum_adj
@@ -319,6 +350,33 @@ def format_cs2_full_report(
     if h_standin.get("has_standin") or a_standin.get("has_standin"):
         report += "\n"
 
+    # ── ВЕРДИКТ ────────────────────────────────────────────────────────────
+    try:
+        from formatters import reliability_fires as _rf_cs2
+    except Exception:
+        def _rf_cs2(p): return "🔥🔥🔥"
+    _h_prob = analysis.get("home_prob", 0.5)
+    _a_prob = analysis.get("away_prob", 0.5)
+    _fav_cs2 = home_team if _h_prob >= _a_prob else away_team
+    _fav_pct = round(max(_h_prob, _a_prob) * 100)
+    _und_pct = round(min(_h_prob, _a_prob) * 100)
+    if ranked_bets:
+        _cs2_verdict_hdr = "✅ СТАВИТЬ"
+        _cs2_rel = _rf_cs2(_fav_pct)
+        _top_bet = ranked_bets[0]
+        _cs2_verdict_line = f"💰 *{_top_bet['label']}* @ {_top_bet['odds']} | EV: +{_top_bet['ev']}% | Банк: {_top_bet['kelly']}%"
+    else:
+        _cs2_verdict_hdr = "❌ НЕ СТАВИТЬ"
+        _cs2_rel = "⚠️ Модель уверена — ставки нет"
+        _cs2_verdict_line = f"🏆 *{_fav_cs2}* выиграет — но ставить не рекомендуем"
+    report += f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    report += f"🎯 *ВЕРДИКТ: {_cs2_verdict_hdr}*\n"
+    report += f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    report += f"🏆 *{_fav_cs2}* — {_fav_pct}% | {_und_pct}%\n"
+    report += f"{_cs2_rel}\n"
+    report += f"{_cs2_verdict_line}\n"
+    report += f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
     # ── РЕКОМЕНДУЕМЫЕ СТАВКИ (всегда вверху) ─────────────────────────────
     if ranked_bets:
         top = ranked_bets[0]
@@ -429,9 +487,9 @@ def format_cs2_full_report(
 
     # ── AI анализ ─────────────────────────────────────────────────────────
     if gpt_analysis and gpt_analysis != "—" and not gpt_analysis.startswith("❌"):
-        report += f"🧠 *GPT Стратег:*\n_{gpt_analysis}_\n\n"
+        report += f"🐍🦁🐐 *Химера:*\n_{gpt_analysis}_\n\n"
     if llama_analysis and llama_analysis != "—" and not llama_analysis.startswith("❌"):
-        report += f"🦙 *Llama Тактик:*\n_{llama_analysis}_\n\n"
+        report += f"🌀 *Тень:*\n_{llama_analysis}_\n\n"
 
     # ── Signal Engine ─────────────────────────────────────────────────────
     if signal_checks:
@@ -461,7 +519,7 @@ def format_cs2_full_report(
         for sig in golden_signals:
             report += f"🌟 *ЗОЛОТОЙ СИГНАЛ:* {sig['outcome']} {sig['team']} @ {sig['odds']} (EV: +{sig['ev']}% | Уверенность: {sig['confidence']}%)\n"
     else:
-        report += f"⏸ *СИГНАЛ: ПРОПУСТИТЬ* — недостаточно подтверждений\n"
+        report += f"❌ *НЕ СТАВИТЬ* — недостаточно подтверждений\n"
 
     if chimera_verdict_block:
         # Конвертируем HTML-теги в Markdown (CS2 отчёт использует parse_mode="Markdown")

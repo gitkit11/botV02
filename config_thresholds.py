@@ -1,88 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-config_thresholds.py — Централизованные пороги и веса CHIMERA AI
-=================================================================
-Все числовые пороги собраны здесь. Меняй значения только здесь —
-не в signal_engine.py, chimera_signal.py или других модулях.
+config_thresholds.py — Загрузчик порогов из config_thresholds.json
+===================================================================
+Все числовые пороги хранятся в config_thresholds.json.
+Этот файл только загружает их и экспортирует как Python-переменные —
+все импорты в системе остаются неизменными:
+    from config_thresholds import FOOTBALL_CFG, CS2_CFG, ...
+
+Для изменения порогов вручную — редактируй config_thresholds.json.
+MetaLearner пишет туда же атомарно (temp-файл + rename).
 """
+import json
+import os
 
-# ─── Футбол ───────────────────────────────────────────────────────────────────
-FOOTBALL_CFG = {
-    "min_prob":      0.52,   # Минимальная вероятность исхода
-    "min_ev":        0.03,   # Минимальный Expected Value
-    "min_odds":      1.40,   # Нижняя граница коэффициента
-    "max_odds":      4.50,   # Верхняя граница коэффициента
-    "min_form_wins": 2,      # Минимум побед из последних 5
-    "min_elo_gap":   30,     # Минимальная разница ELO
-    "min_score":     3,      # Минимум баллов из 6 для сигнала
-}
+_DIR  = os.path.dirname(os.path.abspath(__file__))
+_PATH = os.path.join(_DIR, "config_thresholds.json")
 
-# ─── CS2 ──────────────────────────────────────────────────────────────────────
-CS2_CFG = {
-    "min_prob":                 0.52,
-    "min_ev":                   0.03,
-    "min_odds":                 1.40,
-    "max_odds":                 3.50,
-    "min_form_wins":            2,
-    "min_elo_gap":              20,
-    "min_mis_gap":              0.02,    # Преимущество по картам (Map Impact Score)
-    "min_rating_gap":           0.04,   # Разница рейтинга игроков
-    "min_map_advantage":        0.08,   # Преимущество на картах (%)
-    "min_key_player_advantage": 0.10,  # Преимущество ключевых игроков
-    "min_score":                4,      # Минимум баллов из 10 для сигнала
-}
 
-# ─── Баскетбол ────────────────────────────────────────────────────────────────
-BASKETBALL_CFG = {
-    "min_prob":    0.55,    # Высокая дисперсия → нужна уверенность
-    "min_ev":      0.03,
-    "min_odds":    1.50,
-    "max_odds":    3.50,
-    "min_elo_gap": 50,      # Масштаб баскетбольного ELO
-    "min_score":   2,       # Минимум баллов из 4
-    # Веса ансамбля
-    "weight_elo":  0.35,
-    "weight_odds": 0.35,
-    "weight_home": 0.15,
-    "weight_form": 0.15,
-}
+def _load() -> dict:
+    with open(_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-# ─── Теннис ───────────────────────────────────────────────────────────────────
-TENNIS_CFG = {
-    "min_prob":       0.55,
-    "min_ev":         0.05,
-    "min_odds":       1.40,
-    "max_odds":       4.00,
-    "min_score":      2,    # Минимум баллов из 4
-    "totals_min_conf": 0.55, # Минимальная уверенность для вывода тоталов
-}
 
-# ─── Chimera Signal (веса компонентов) ───────────────────────────────────────
-CHIMERA_WEIGHTS = {
-    "elo":       25,  # max 25 pts — разрыв ELO
-    "form":      20,  # max 20 pts — форма команды
-    "value":     30,  # max 30 pts — ценность кэфа
-    "prob":      15,  # max 15 pts — сила вероятности
-    "xg":        10,  # max 10 pts — xG качество атаки/защиты
-    "line":      15,  # ±15 pts — движение линии (sharp money)
-    "h2h":       8,   # max 8 pts — очные встречи
-    "ai_boost":  25,  # +25 pts за подтверждение AI
-    "ai_penalty": 15, # -15 pts за несогласие AI
-}
+_cfg = _load()
 
-MIN_CHIMERA_SCORE = 25  # Минимальный итоговый балл для показа сигнала
-
-# ─── Ценная ставка (общая) ────────────────────────────────────────────────────
-VALUE_BET_CFG = {
-    "min_ev":         0.10,   # EV > 10% для "ценной ставки"
-    "min_odds":       1.55,
-    "min_confidence": 0.52,   # уверенность 52%+
-}
-
-# ─── Экспресс ─────────────────────────────────────────────────────────────────
-EXPRESS_CFG = {
-    "min_event_prob":   0.55,  # Минимальная вероятность каждого события
-    "min_events":       2,
-    "max_events":       4,
-    "min_combined_ev":  0.05,
-}
+FOOTBALL_CFG     = _cfg["FOOTBALL_CFG"]
+CS2_CFG          = _cfg["CS2_CFG"]
+BASKETBALL_CFG   = _cfg["BASKETBALL_CFG"]
+HOCKEY_CFG       = _cfg["HOCKEY_CFG"]
+TENNIS_CFG       = _cfg["TENNIS_CFG"]
+CHIMERA_WEIGHTS  = _cfg["CHIMERA_WEIGHTS"]
+MIN_CHIMERA_SCORE = _cfg["MIN_CHIMERA_SCORE"]
+VALUE_BET_CFG    = _cfg["VALUE_BET_CFG"]
+EXPRESS_CFG      = _cfg["EXPRESS_CFG"]

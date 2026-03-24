@@ -9,11 +9,13 @@ def _safe_truncate(text: str, limit: int = 4000) -> str:
     """Обрезает текст до лимита Telegram, сохраняя целые строки."""
     if len(text) <= limit:
         return text
-    truncated = text[:limit]
+    footer = "\n\n⚠️ <i>Отчёт сокращён</i>"
+    cut = limit - len(footer)
+    truncated = text[:cut]
     last_newline = truncated.rfind('\n')
-    if last_newline > limit - 200:
+    if last_newline > cut - 200:
         truncated = truncated[:last_newline]
-    return truncated + "\n\n⚠️ <i>Отчёт сокращён</i>"
+    return truncated + footer
 
 
 def translate_outcome(text, home_team="Хозяева", away_team="Гости"):
@@ -45,6 +47,31 @@ def conf_icon(c):
     return "🔴"
 
 
+def reliability_fires(prob_pct: float) -> str:
+    """Единая шкала надёжности 1-5 огней для всех спортов.
+    prob_pct — вероятность победителя в процентах (0-100).
+    """
+    if prob_pct >= 85:
+        return "🔥🔥🔥🔥🔥 Топ сигнал"
+    elif prob_pct >= 75:
+        return "🔥🔥🔥🔥 Высокая"
+    elif prob_pct >= 65:
+        return "🔥🔥🔥 Хорошая"
+    elif prob_pct >= 55:
+        return "🔥🔥 Средняя"
+    else:
+        return "🔥 Слабая"
+
+
+def _prob_icon(prob: float) -> str:
+    """Эмодзи-шкала уверенности по вероятности."""
+    if prob >= 80: return "🔥"
+    elif prob >= 70: return "⭐"
+    elif prob >= 60: return "✅"
+    elif prob >= 50: return "⚠️"
+    return "❌"
+
+
 def _escape_md(text: str) -> str:
     """Экранирует спецсимволы для Markdown V1 в Telegram."""
     for ch in ('_', '*', '`', '['):
@@ -56,7 +83,7 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
                        mixtral_result=None, poisson_probs=None, elo_probs=None, ensemble_probs=None,
                        home_xg_stats=None, away_xg_stats=None, value_bets=None, injuries_block=None,
                        match_time=None, chimera_verdict_block="", ml_block="",
-                       bookmaker_odds=None):
+                       bookmaker_odds=None, movement_block=""):
     """Форматирует главный отчёт анализа матча с полным математическим анализом."""
 
     _pd = prophet_data if prophet_data is not None else [0.33, 0.33, 0.34]
@@ -134,7 +161,7 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
         best_vb = value_bets[0]
         signal_icon = f"💰 СИГНАЛ: VALUE СТАВКА! {best_vb['outcome']} @ {best_vb['odds']} (EV: +{best_vb['ev']}%)"
     else:
-        signal_icon = "⏸ СИГНАЛ: ПРОПУСТИТЬ"
+        signal_icon = "❌ НЕ СТАВИТЬ"
 
     # xG блок
     xg_block = ""
@@ -270,56 +297,102 @@ def format_main_report(home_team, away_team, prophet_data, oracle_results, gpt_r
     _h_odds = _odds.get("home_win") or _odds.get("pinnacle_home")
     _d_odds = _odds.get("draw")     or _odds.get("pinnacle_draw")
     _a_odds = _odds.get("away_win") or _odds.get("pinnacle_away")
-    if _h_odds and _a_odds:
-        _odds_line = f"📊 Коэффициенты: П1 *{_h_odds}*" + (f" | Х *{_d_odds}*" if _d_odds else "") + f" | П2 *{_a_odds}*"
+
+    # Валидация коэффициентов — если любой > 30, данные скорее всего битые
+    _odds_suspicious = any(o and float(o) > 30.0 for o in [_h_odds, _d_odds, _a_odds] if o)
+    if _odds_suspicious:
+        value_bets = []  # не показывать value ставки с битыми коэффициентами
+
+    if _h_odds and _a_odds and not _odds_suspicious:
+        _odds_line = f"💰 П1 *{_h_odds}* · Х *{_d_odds}* · П2 *{_a_odds}*" if _d_odds else f"💰 П1 *{_h_odds}* · П2 *{_a_odds}*"
+    elif _odds_suspicious:
+        _odds_line = "⚠️ _Коэффициенты недоступны_"
     else:
         _odds_line = ""
+
+    # Надёжность — 5-уровневая шкала 🔥
+    # Берём среднее между уверенностью GPT и согласием агентов
+    _agree_bonus = 5 if max_count >= 2 else 0
+    _reliability = reliability_fires(gpt_confidence + _agree_bonus)
+
+    # Блок вердикта
+    if bet_signal == "СТАВИТЬ":
+        _verdict_header = "✅ СТАВИТЬ"
+        _verdict_bet = f"💰 *{gpt_verdict}* @ {gpt_odds} | EV: +{gpt_ev:.1f}% | Банк: {gpt_stake:.1f}%"
+    elif value_bets:
+        best_vb = value_bets[0]
+        _verdict_header = "💎 VALUE СТАВКА"
+        _verdict_bet = f"💰 *{best_vb['outcome']}* @ {best_vb['odds']} | EV: +{best_vb['ev']}%"
+    else:
+        _verdict_header = "❌ НЕ СТАВИТЬ"
+        _verdict_bet = f"_{signal_reason or 'Нет ценности в текущих коэффициентах'}_"
+
+    # Ансамбль одной строкой
+    _ens_line = ""
+    if ensemble_probs:
+        _ep = ensemble_probs
+        _ens_line = (f"🔢 Ансамбль: П1 *{round(_ep.get('home',0)*100)}%* · "
+                     f"Х *{round(_ep.get('draw',0)*100)}%* · П2 *{round(_ep.get('away',0)*100)}%*")
+
+    # ELO одной строкой
+    _elo_line = ""
+    if elo_probs:
+        _hf = elo_probs.get('home_form',''); _af = elo_probs.get('away_form','')
+        _form = f" | Форма: {_hf} · {_af}" if _hf and _hf != '?????' else ""
+        _elo_line = (f"⚡ ELO: {home_team} {elo_probs.get('home_elo',1500)} · "
+                     f"{away_team} {elo_probs.get('away_elo',1500)}{_form}")
+
+    # Пуассон одной строкой
+    _poi_line = ""
+    if poisson_probs:
+        _poi_line = (f"🎯 Пуассон: П1 {round(poisson_probs['home_win']*100)}% · "
+                     f"Х {round(poisson_probs['draw']*100)}% · П2 {round(poisson_probs['away_win']*100)}% "
+                     f"| Тотал >2.5: {round(poisson_probs['over_25']*100)}% "
+                     f"| Счёт: {poisson_probs['most_likely_score']}")
+
+    # Тотал и BTTS от Тени
+    _total_line = ""
+    if llama_total and llama_total != "—":
+        _total_line = f"⚽ Тотал: *{llama_total}*"
+        if llama_btts and llama_btts != "—":
+            _total_line += f" | ОЗ: *{llama_btts}*"
 
     # Экранируем имена команд для Markdown V1
     _ht = _escape_md(home_team)
     _at = _escape_md(away_team)
 
-    report = f"""
-🏆 *CHIMERA AI v4.3 — АНАЛИЗ МАТЧА*
-━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Блок деталей (второстепенное)
+    _details_parts = []
+    _details_parts.append(f"📊 Пророк: П1 {home_prob:.0f}% · Х {draw_prob:.0f}% · П2 {away_prob:.0f}%")
+    _details_parts.append(f"🗣 Оракул: {_ht} {home_sentiment_label} · {_at} {away_sentiment_label}")
+    if home_xg_stats or away_xg_stats:
+        _xg_h = home_xg_stats.get('avg_xg_last5','?') if home_xg_stats else '?'
+        _xg_a = away_xg_stats.get('avg_xg_last5','?') if away_xg_stats else '?'
+        _details_parts.append(f"📈 xG: {_ht} {_xg_h} · {_at} {_xg_a}")
+    _details = "\n".join(_details_parts)
 
+    report = f"""🏆 *CHIMERA AI — АНАЛИЗ МАТЧА*
+━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚽ *{_ht} vs {_at}*
-{(f'📅 *{match_time_str}*') if match_time_str else ''}
-{_odds_line}
-
-📊 *ПРОРОК (нейросеть):*
- П1: {home_prob:.0f}% | Х: {draw_prob:.0f}% | П2: {away_prob:.0f}%
-
-🗣 *ОРАКУЛ (новостной фон):*
- {_ht}: {home_sentiment_label}
- {_at}: {away_sentiment_label}
-{(chr(10) + injuries_block) if injuries_block else ""}
-{(chr(10) + math_section) if math_section else ""}
+{(f'📅 {match_time_str}') if match_time_str else ''}{(chr(10) + _odds_line) if _odds_line else ''}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-🐍🦁🐐 *Химера (анализ):*
-_{gpt_summary}_
-
-🌀 *Тень:*
-_{llama_summary}_
-{(chr(10) + mixtral_block) if mixtral_block else ""}
+🏆 *Победит: {gpt_verdict}* — уверенность {gpt_confidence}%
+{_reliability} | {agreement_text}
+🎯 *{_verdict_header}*
+{_verdict_bet}
+{('⚽ ' + _total_line) if _total_line else ''}{(chr(10) + value_block) if value_block else ''}{(chr(10) + movement_block) if movement_block else ''}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-🐍🦁🐐 *ВЕРДИКТ ХИМЕРЫ:*
-{conf_icon(gpt_confidence)} Исход: {gpt_verdict}
-{conf_icon(gpt_confidence)} Уверенность: {gpt_confidence}%
-🎯 Коэффициент: {gpt_odds}
-💰 Ставка (Келли): {gpt_stake:.1f}% от депозита
-📈 Ожидаемая ценность: +{gpt_ev:.1f}%
-
-🌀 *Вердикт Тени:*
-{conf_icon(llama_confidence)} Исход: {llama_verdict}
-{conf_icon(llama_confidence)} Уверенность: {llama_confidence}%
-⚽ Тотал: {llama_total} _{llama_total_reason}_
-🥅 Обе забьют: {llama_btts}
-{(chr(10) + value_block) if value_block else ""}
+📊 *АНАЛИЗ*
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-*{signal_icon}*
-_{signal_reason}_
-
+{_ens_line}
+{_elo_line}
+{_poi_line}
+{(chr(10) + '━━━━━━━━━━━━━━━━━━━━━━━━━') if gpt_summary or llama_summary else ''}
+{('🐍🦁🐐 *Химера:* _' + gpt_summary + '_') if gpt_summary else ''}
+{('🌀 *Тень:* _' + llama_summary + '_') if llama_summary else ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━
+{_details}
+{(chr(10) + injuries_block) if injuries_block else ''}
 """
     def _h2m(s):
         return (s.replace("<b>", "*").replace("</b>", "*")
@@ -371,8 +444,8 @@ def format_goals_report(home_team, away_team, goals_result, bookmaker_odds=None,
                 ev_block = f"\n📊 _(нет ценности: EV Больше={ev_over:+.1f}% / Меньше={ev_under:+.1f}%)_"
 
     # Строки с коэффициентами
-    odds_2_5_str = f" | КФ: Больше={real_over_2_5} / Меньше={real_under_2_5}" if real_over_2_5 else ""
-    odds_1_5_str = f" | КФ: {real_over_1_5}" if real_over_1_5 else ""
+    odds_2_5_str = f" | Кэф: Больше {real_over_2_5} / Меньше {real_under_2_5}" if real_over_2_5 else ""
+    odds_1_5_str = f" | Кэф: {real_over_1_5}" if real_over_1_5 else ""
 
     return f"""
 ⚽ *АНАЛИЗ ГОЛОВ — {_ht} vs {_at}*
@@ -493,7 +566,7 @@ _{best_bet}_
 """.strip()
 
 
-def _format_chimera_page(candidates: list, idx: int) -> str:
+def _format_chimera_page(candidates: list, idx: int, bankroll: float = 0) -> str:
     """Форматирует одну страницу карусели — полный формат как в format_chimera_signals."""
     from chimera_signal import _format_match_time, score_label, _format_totals_block
     c = candidates[idx]
@@ -521,7 +594,7 @@ def _format_chimera_page(candidates: list, idx: int) -> str:
         f"<b>{label} [{score:.0f}/100]</b>{time_line}", "",
         f"{sp_emoji} | {matchup}",
         bet_line,
-        f"💰 Кэф: <b>{c.get('odds','?')}</b> | Наша вероятность: <b>{c.get('prob',0)}%</b>",
+        f"💰 Кэф: <b>{c.get('odds','?')}</b> | Наша вероятность: <b>{c.get('prob',0)}%</b> {_prob_icon(c.get('prob',0))}",
         f"📈 EV: <b>{c.get('ev',0):+.1f}%</b> | Ставь: <b>{c.get('kelly',0):.1f}%</b> банка",
     ]
 

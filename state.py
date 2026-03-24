@@ -1,5 +1,7 @@
 # state.py — глобальное состояние бота
 # Все глобальные переменные, НЕ зависящие от asyncio
+import collections
+import time
 
 # --- Кэш матчей ---
 matches_cache: list = []
@@ -35,3 +37,17 @@ _awaiting_bankroll: set = set()
 # Константы
 CHIMERA_DAILY_LIMIT: int = 7
 ADMIN_IDS: set = {6852160892, 608064556}
+
+# Мониторинг: лог ошибок и время старта
+_error_log: collections.deque = collections.deque(maxlen=50)
+_bot_start_time: float = time.time()
+
+# Баскетбол: кэш матчей и текущая лига
+_basketball_cache: dict = {}
+_basketball_league: str = "basketball_nba"
+
+# Хоккей: кэш матчей
+_hockey_cache: dict = {}
+
+# Сигналы дня: блокировка двойного нажатия
+_signals_scan_in_progress: bool = False

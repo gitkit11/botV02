@@ -23,6 +23,7 @@ except ImportError:
 BASKETBALL_LEAGUES = [
     ("basketball_nba",        "🏀 NBA"),
     ("basketball_euroleague", "🏆 Евролига"),
+    ("basketball_nbl",        "🇦🇺 NBL Australia"),
 ]
 
 # ── ELO рейтинги NBA (сезон 2025-26) ─────────────────────────────────────────
@@ -525,16 +526,56 @@ def calculate_basketball_win_prob(home: str, away: str,
     # Анализ тотала
     total_analysis = _analyze_total(h_prob, a_prob, odds, elo_gap)
 
-    # Сигнал
-    best_ev   = max(h_ev, a_ev)
-    best_pick = home if h_ev >= a_ev else away
-    best_odds = (odds["home_win"] if h_ev >= a_ev else odds["away_win"]) if odds else 0
-    if best_ev > 5:
-        bet_signal = "✅ СТАВИТЬ"
-    elif best_ev > 0:
-        bet_signal = "⚠️ СЛАБЫЙ СИГНАЛ"
+    # Сигнал — prob и EV должны быть от одной и той же команды
+    # Если хотя бы один кеф отсутствует — сигнал недостоверен
+    both_odds_present = odds and odds.get("home_win", 0) > 1.02 and odds.get("away_win", 0) > 1.02
+    if h_ev >= a_ev:
+        best_ev    = h_ev
+        best_prob  = h_prob
+        best_pick  = home
+        best_odds  = odds["home_win"] if odds else 0
     else:
-        bet_signal = "⏸ ПРОПУСТИТЬ"
+        best_ev    = a_ev
+        best_prob  = a_prob
+        best_pick  = away
+        best_odds  = odds["away_win"] if odds else 0
+    try:
+        from signal_engine import get_bet_tier as _get_tier
+        bet_signal = _get_tier(best_prob, best_ev, "basketball") if both_odds_present else "НЕ СТАВИТЬ"
+    except Exception:
+        bet_signal = "СТАВИТЬ 🔥" if (best_ev > 5 and both_odds_present) else "НЕ СТАВИТЬ"
+
+    # Андердог-ценность: если фаворит не проходит порог, проверяем андердога
+    underdog_value = None
+    if both_odds_present and best_ev < 0:
+        und_pick  = away if best_pick == home else home
+        und_prob  = a_prob if best_pick == home else h_prob
+        und_odds  = (odds.get("away_win", 0) if best_pick == home else odds.get("home_win", 0))
+        und_ev    = round((und_prob * und_odds - 1) * 100, 1) if und_odds > 1.02 else 0
+        # Ценная ставка на андердога: EV > 20% и кэф >= 3.0 и наша вер-сть >= 15%
+        if und_ev > 20 and und_odds >= 3.0 and und_prob >= 0.15:
+            und_kelly = round(max(0, min(2.0, (und_prob - (1 - und_prob) / (und_odds - 1)) * 100)), 1)
+            underdog_value = {
+                "team":   und_pick,
+                "odds":   und_odds,
+                "prob":   round(und_prob * 100),
+                "ev":     und_ev,
+                "kelly":  und_kelly,
+            }
+
+    # Причина НЕ СТАВИТЬ
+    no_bet_reason = ""
+    if bet_signal == "НЕ СТАВИТЬ":
+        if not both_odds_present:
+            no_bet_reason = "⚠️ Коэффициенты не найдены у букмекера"
+        elif best_ev < 0:
+            bk_implied = round(100 / best_odds) if best_odds > 1 else 0
+            no_bet_reason = (
+                f"📉 Букмекер переоценивает фаворита: "
+                f"бук {bk_implied}% vs наша модель {round(best_prob*100)}% → EV {best_ev:+.1f}%"
+            )
+        else:
+            no_bet_reason = f"📊 EV {best_ev:+.1f}% или вероятность {round(best_prob*100)}% ниже порога"
 
     return {
         "home_prob":      h_prob,
@@ -547,8 +588,10 @@ def calculate_basketball_win_prob(home: str, away: str,
         "best_pick":      best_pick,
         "best_odds":      best_odds,
         "best_ev":        best_ev,
-        "bet_signal":     bet_signal,
-        "total_analysis": total_analysis,
+        "bet_signal":      bet_signal,
+        "no_bet_reason":   no_bet_reason,
+        "underdog_value":  underdog_value,
+        "total_analysis":  total_analysis,
         "h_elo_prob":     h_elo_prob,
         "h_odds_prob":    h_odds_prob,
         "home_form":       h_form,
@@ -645,3 +688,167 @@ def _analyze_total(h_prob: float, a_prob: float, odds: dict, elo_gap: int) -> di
         "nv_under":   round(nv_under * 100, 1),
         "has_value":  lean_ev > 3.0,
     }
+
+
+# ── Форматирование отчёта ─────────────────────────────────────────────────────
+
+def format_basketball_report(
+    home_team: str, away_team: str,
+    analysis: dict, odds: dict,
+    gpt_result: dict, llama_result: dict,
+    match_time: str, league_name: str,
+) -> str:
+    h_prob     = analysis["home_prob"]
+    a_prob     = analysis["away_prob"]
+    h_ev       = analysis["h_ev"]   # уже в процентах
+    a_ev       = analysis["a_ev"]
+    bet_signal      = analysis["bet_signal"]
+    no_bet_reason   = analysis.get("no_bet_reason", "")
+    underdog_value  = analysis.get("underdog_value")
+    total_data      = analysis.get("total_analysis", {})
+    home_form  = analysis.get("home_form", "")
+    away_form  = analysis.get("away_form", "")
+    home_b2b   = analysis.get("home_b2b", False)
+    away_b2b   = analysis.get("away_b2b", False)
+
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        dt     = _dt.fromisoformat(match_time.replace("Z", "+00:00"))
+        dt_msk = dt + _td(hours=3)
+        time_label = dt_msk.strftime("%d.%m %H:%M МСК")
+    except Exception:
+        time_label = match_time[:16]
+
+    if h_prob >= a_prob:
+        fav, und = home_team, away_team
+        fav_prob = h_prob
+        fav_ev   = h_ev
+        fav_odds = odds.get("home_win", 0)
+        und_odds = odds.get("away_win", 0)
+    else:
+        fav, und = away_team, home_team
+        fav_prob = a_prob
+        fav_ev   = a_ev
+        fav_odds = odds.get("away_win", 0)
+        und_odds = odds.get("home_win", 0)
+
+    und_prob = 1 - fav_prob
+
+    kelly = 0.0
+    if fav_odds > 1.02 and fav_ev > 0:
+        kelly = round((fav_prob - (1 - fav_prob) / (fav_odds - 1)) * 100, 1)
+        kelly = max(0.0, min(kelly, 25.0))
+
+    # Иконка сигнала
+    if "🔥🔥🔥" in bet_signal:
+        signal_icon = "🔥"
+    elif "🔥🔥" in bet_signal:
+        signal_icon = "🟢"
+    elif "🔥" in bet_signal:
+        signal_icon = "🟡"
+    else:
+        signal_icon = "🔴"
+
+    # EV-полоса (EV уже в %, напр. 12.5)
+    ev_bar_filled = min(10, max(0, int(fav_ev / 3)))
+    ev_bar = "▓" * ev_bar_filled + "░" * (10 - ev_bar_filled)
+
+    gpt_verdict   = gpt_result.get("verdict", "")
+    gpt_conf      = gpt_result.get("confidence", 0)
+    gpt_summary   = gpt_result.get("summary", "")
+    llama_verdict = llama_result.get("verdict", "")
+    llama_conf    = llama_result.get("confidence", 0)
+    llama_summary = llama_result.get("summary", "")
+
+    def _verd_icon(v, fav_is_home):
+        if not v:
+            return "❓"
+        return "✅" if ((v == "home_win") == fav_is_home) else "⚠️"
+
+    fav_is_home = (fav == home_team)
+
+    ai_agree = bool(gpt_verdict) and bool(llama_verdict) and gpt_verdict == llama_verdict
+    consensus_block = ""
+    if ai_agree:
+        consensus_block = "🤝 <b>AI Консенсус:</b> Оба агента согласны\n"
+    elif gpt_verdict and llama_verdict:
+        consensus_block = "⚡ <b>AI Расхождение:</b> Агенты не согласны — выше риск\n"
+
+    form_block = ""
+    if home_form or away_form:
+        form_block = f"📈 <b>Форма:</b>  {home_team}: {home_form or '—'}  |  {away_team}: {away_form or '—'}\n"
+    b2b_block = ""
+    if home_b2b:
+        b2b_block += f"⚠️ {home_team} играл вчера (back-to-back)\n"
+    if away_b2b:
+        b2b_block += f"⚠️ {away_team} играл вчера (back-to-back)\n"
+
+    total_block = ""
+    if total_data:
+        lean_icon = "📈" if total_data.get("lean") == "Over" else ("📉" if total_data.get("lean") == "Under" else "➡️")
+        total_block = (
+            f"\n🏀 <b>Тотал очков:</b> {total_data['line']} "
+            f"(Б {total_data['over_odds']} / М {total_data['under_odds']})\n"
+            f"{lean_icon} Склонность: <b>{total_data.get('lean', '—')}</b>\n"
+        )
+
+    lines = [
+        f"🏀 <b>{home_team} vs {away_team}</b>",
+        f"📅 {league_name} | {time_label}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"{signal_icon} <b>СИГНАЛ: {bet_signal}</b>",
+        *([f"<i>{no_bet_reason}</i>"] if no_bet_reason else []),
+        "",
+        f"🎯 <b>Ставка:</b> Победа {fav}",
+        f"📊 <b>Вероятность:</b> {round(fav_prob*100)}%  (андердог: {round(und_prob*100)}%)",
+        f"💰 <b>Кэф:</b> {fav} @ <b>{fav_odds}</b>  |  {und} @ {und_odds}",
+        f"📈 <b>EV:</b> {fav_ev:+.1f}%   <code>{ev_bar}</code>",
+    ]
+    if kelly > 0:
+        lines.append(f"🎲 <b>Kelly:</b> {kelly:.1f}% от банка")
+
+    lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━"]
+
+    if gpt_summary:
+        lines += [
+            f"🐍🦁🐐 <b>Химера:</b> {_verd_icon(gpt_verdict, fav_is_home)} уверенность {gpt_conf}%",
+            f"<i>{gpt_summary[:300]}</i>",
+        ]
+    if llama_summary:
+        lines += [
+            f"🌀 <b>Тень:</b> {_verd_icon(llama_verdict, fav_is_home)} уверенность {llama_conf}%",
+            f"<i>{llama_summary[:300]}</i>",
+        ]
+
+    if consensus_block or form_block or b2b_block:
+        lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        if consensus_block:
+            lines.append(consensus_block.strip())
+        if form_block:
+            lines.append(form_block.strip())
+        if b2b_block:
+            lines.append(b2b_block.strip())
+
+    if total_block:
+        lines.append(total_block.strip())
+
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 ELO: {home_team} <b>{analysis.get('elo_home','?')}</b>  vs  {away_team} <b>{analysis.get('elo_away','?')}</b>",
+        f"🔢 Ансамбль: {home_team} {round(h_prob*100)}%  |  {away_team} {round(a_prob*100)}%",
+        f"🏦 No-Vig: {home_team} {round(odds.get('no_vig_home',0)*100,1)}%  |  {away_team} {round(odds.get('no_vig_away',0)*100,1)}%",
+    ]
+
+    if underdog_value:
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"⚠️ <b>КОНТРАРНАЯ СТАВКА (против прогноза):</b>",
+            f"Модель даёт победу <b>{fav}</b>, но кэф на <b>{underdog_value['team']}</b> завышен.",
+            f"💎 {underdog_value['team']} @ <b>{underdog_value['odds']}</b>  |  Наша вер-сть: {underdog_value['prob']}%  |  EV: <b>+{underdog_value['ev']}%</b>",
+            f"🎲 Максимум <b>1% банка</b> — очень высокий риск, только для опытных",
+        ]
+
+    return "\n".join(lines)

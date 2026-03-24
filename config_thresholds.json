@@ -1,0 +1,81 @@
+{
+  "FOOTBALL_CFG": {
+    "min_prob": 0.6,
+    "min_ev": 0.25,
+    "min_odds": 1.55,
+    "max_odds": 3.5,
+    "min_form_wins": 3,
+    "min_elo_gap": 50,
+    "min_score": 5,
+    "no_draw": true,
+    "max_draw_prob": 0.24
+  },
+  "CS2_CFG": {
+    "min_prob": 0.6,
+    "min_ev": 0.15,
+    "min_odds": 1.5,
+    "max_odds": 2.5,
+    "min_form_wins": 3,
+    "min_elo_gap": 50,
+    "min_mis_gap": 0.04,
+    "min_rating_gap": 0.06,
+    "min_map_advantage": 0.1,
+    "min_key_player_advantage": 0.12,
+    "min_score": 7
+  },
+  "BASKETBALL_CFG": {
+    "min_prob": 0.62,
+    "min_ev": 0.08,
+    "min_odds": 1.55,
+    "max_odds": 2.2,
+    "min_elo_gap": 100,
+    "min_score": 4,
+    "weight_elo": 0.31,
+    "weight_odds": 0.39,
+    "weight_home": 0.15,
+    "weight_form": 0.15
+  },
+  "HOCKEY_CFG": {
+    "min_prob": 0.6,
+    "min_ev": 0.09,
+    "min_odds": 1.6,
+    "max_odds": 2.4,
+    "min_elo_gap": 70,
+    "min_score": 3,
+    "weight_elo": 0.3,
+    "weight_odds": 0.4,
+    "weight_home": 0.15,
+    "weight_form": 0.15
+  },
+  "TENNIS_CFG": {
+    "min_prob": 0.65,
+    "min_ev": 0.12,
+    "min_odds": 1.6,
+    "max_odds": 2.5,
+    "min_score": 3,
+    "totals_min_conf": 0.65
+  },
+  "CHIMERA_WEIGHTS": {
+    "elo": 25,
+    "form": 20,
+    "value": 30,
+    "prob": 15,
+    "xg": 10,
+    "line": 15,
+    "h2h": 8,
+    "ai_boost": 25,
+    "ai_penalty": 15
+  },
+  "MIN_CHIMERA_SCORE": 50,
+  "VALUE_BET_CFG": {
+    "min_ev": 0.12,
+    "min_odds": 1.55,
+    "min_confidence": 0.62
+  },
+  "EXPRESS_CFG": {
+    "min_event_prob": 0.63,
+    "min_events": 2,
+    "max_events": 3,
+    "min_combined_ev": 0.08
+  }
+}

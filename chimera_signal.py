@@ -22,6 +22,10 @@ import html
 import json
 import os
 import logging
+import re
+
+def _strip_cjk(text: str) -> str:
+    return re.sub(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]', '', text).strip()
 from typing import List, Dict, Optional
 from config_thresholds import CHIMERA_WEIGHTS, MIN_CHIMERA_SCORE
 
@@ -52,7 +56,7 @@ def get_historical_calibration() -> dict:
     """
     import time
     global _history_cache, _history_cache_ts
-    if time.time() - _history_cache_ts < 3600 and _history_cache:
+    if time.time() - _history_cache_ts < 1800 and _history_cache:
         return _history_cache
 
     result = {"bias": 0.0, "buckets": {}, "total_checked": 0}
@@ -148,7 +152,7 @@ def _form_score(form_str: str) -> float:
 
 
 def _implied_prob(odds: float) -> float:
-    return 1.0 / odds if odds > 1.0 else 1.0
+    return 1.0 / odds if odds > 1.02 else 0.0
 
 
 def compute_chimera_score(
@@ -242,7 +246,7 @@ def compute_chimera_score(
 
         ev = round((prob * odds - 1) * 100, 1)
         kelly_raw = max(0, (prob * odds - 1) / (odds - 1)) * 100 if odds > 1 else 0
-        kelly = round(min(kelly_raw, 20.0), 1)  # максимум 20% банка
+        kelly = round(min(kelly_raw * 0.5, 10.0), 1)  # половина Келли, максимум 10% банка
 
         candidates.append({
             "sport":         "football",
@@ -279,6 +283,7 @@ def _build_candidates_text(candidates: List[Dict]) -> str:
     lines = []
     for i, c in enumerate(candidates[:5], 1):
         sport = c.get("sport", "football")
+        news_suffix = f"\n   📰 {c['news_context']}" if c.get("news_context") else ""
         if sport == "tennis":
             surf_icons = {"hard": "🎾 hard", "clay": "🟫 clay", "grass": "🟩 grass"}
             surf = surf_icons.get(c.get("surface", "hard"), "hard")
@@ -287,30 +292,33 @@ def _build_candidates_text(candidates: List[Dict]) -> str:
                 f"Победа: {c['team']} (рейт.#{c.get('rank','?')}) @ {c['odds']} | "
                 f"Вероятность: {c['prob']}% (бук: {c['implied_prob']}%) | "
                 f"EV: {c['ev']:+.1f}% | Разрыв рейтингов: #{c.get('rank','?')} vs #{c.get('opp_rank','?')} | "
-                f"Score: {c['chimera_score']}"
+                f"Score: {c['chimera_score']}{news_suffix}"
             )
         elif sport == "cs2":
             lines.append(
                 f"{i}. {c['home']} vs {c['away']} [CS2] | "
                 f"Победа: {c['team']} ({c['outcome']}) @ {c['odds']} | "
                 f"Вероятность: {c['prob']}% (бук: {c['implied_prob']}%) | "
-                f"EV: {c['ev']:+.1f}% | Score: {c['chimera_score']}"
+                f"EV: {c['ev']:+.1f}% | Score: {c['chimera_score']}{news_suffix}"
             )
         elif sport == "basketball":
             lines.append(
                 f"{i}. {c['home']} vs {c['away']} [баскетбол] | "
                 f"Победа: {c['team']} ({c['outcome']}) @ {c['odds']} | "
                 f"Вероятность: {c['prob']}% (бук: {c['implied_prob']}%) | "
-                f"EV: {c['ev']:+.1f}% | ELO разрыв: {c.get('elo_gap', 0)} | Score: {c['chimera_score']}"
+                f"EV: {c['ev']:+.1f}% | ELO разрыв: {c.get('elo_gap', 0)} | Score: {c['chimera_score']}{news_suffix}"
             )
         else:
-            lines.append(
+            line = (
                 f"{i}. {c['home']} vs {c['away']} [football] | "
                 f"Ставка: {c['team']} ({c['outcome']}) @ {c['odds']} | "
                 f"Вероятность: {c['prob']}% (бук: {c['implied_prob']}%) | "
                 f"EV: {c['ev']:+.1f}% | Форма: {c['form'] or '—'} | "
                 f"ELO разрыв: {c['elo_gap']} | Score: {c['chimera_score']}"
             )
+            if c.get("news_context"):
+                line += f"\n   📰 Новости: {c['news_context']}"
+            lines.append(line)
     return "\n".join(lines)
 
 
@@ -333,33 +341,45 @@ def run_ai_verification(
     top = candidates[:5]
     cands_text = _build_candidates_text(top)
 
+    import concurrent.futures as _cf_ai
+
     # ── Уровень 1: GPT — математический выбор ─────────────────────────────
     gpt_best_idx   = None
     gpt_confidence = 60
     gpt_reason     = ""
     gpt_skip       = []
 
-    if gpt_client:
-        # Определяем вид спорта для адаптации промпта
-        top_sport = top[0].get("sport", "football") if top else "football"
-        if top_sport == "tennis":
-            criteria = "EV > 3% = ценность, большой разрыв рейтингов = надёжность, специализация на поверхности = ключевой фактор."
-        elif top_sport == "cs2":
-            criteria = "EV > 3% = ценность, форма WW = хорошо, стабильность команды важна."
-        elif top_sport == "basketball":
-            criteria = "EV > 3% = ценность, большой ELO разрыв = надёжность, back-to-back штраф = риск."
-        else:
-            criteria = "EV > 3% = ценность, форма WW = хорошо, большой ELO разрыв = надёжность."
+    top_sport = top[0].get("sport", "football") if top else "football"
+    if top_sport == "tennis":
+        criteria = "EV > 3% = ценность, большой разрыв рейтингов = надёжность, специализация на поверхности = ключевой фактор."
+    elif top_sport == "cs2":
+        criteria = "EV > 3% = ценность, форма WW = хорошо, стабильность команды важна."
+    elif top_sport == "basketball":
+        criteria = "EV > 3% = ценность, большой ELO разрыв = надёжность, back-to-back штраф = риск."
+    else:
+        criteria = "EV > 3% = ценность, форма WW = хорошо, большой ELO разрыв = надёжность."
 
-        prompt_gpt = f"""Ты — аналитик ставок. Выбери лучшую ставку из {len(top)} кандидатов.
+    prompt_gpt = f"""Ты — аналитик ставок. Оцени каждую ставку из {len(top)} кандидатов.
 
 {cands_text}
 
 Критерии: {criteria}
 
 JSON ответ:
-{{"best": 1, "confidence": 70, "reason": "краткая причина", "skip": []}}"""
+{{
+  "best": 1,
+  "confidence": 70,
+  "reason": "краткая причина выбора лучшего (1 предложение)",
+  "reasons": ["оценка кандидата 1", "оценка кандидата 2", "оценка кандидата 3"],
+  "skip": []
+}}
+"reasons" — массив из {len(top)} строк, по одной оценке на каждого кандидата (1 предложение каждая)."""
 
+    best_c_default = top[0]
+
+    def _call_gpt():
+        if not gpt_client:
+            return None
         try:
             resp = gpt_client.chat.completions.create(
                 model=gpt_model,
@@ -371,21 +391,17 @@ JSON ответ:
                 max_tokens=180,
                 response_format={"type": "json_object"},
             )
-            data = json.loads(resp.choices[0].message.content)
-            gpt_best_idx   = max(0, min(len(top)-1, int(data.get("best", 1)) - 1))
-            gpt_confidence = int(data.get("confidence", 60))
-            gpt_reason     = str(data.get("reason", ""))
-            gpt_skip       = [max(0, int(i)-1) for i in data.get("skip", [])]
-            logger.info(f"[CHIMERA GPT] Выбор #{gpt_best_idx+1} | {gpt_confidence}%")
+            return json.loads(resp.choices[0].message.content)
         except Exception as e:
             logger.warning(f"[CHIMERA GPT] Ошибка: {e}")
+            return None
 
-    # ── Уровень 2: Llama — логика и тактика ───────────────────────────────
+    # ── Уровень 2: Llama — строим промпт по top[0] (параллельно с GPT) ──
     llama_best_idx = None
     llama_logic    = ""
 
     if groq_client:
-        best_c = top[gpt_best_idx] if gpt_best_idx is not None else top[0]
+        best_c = top[0]  # используем top[0] — GPT ещё не ответил, запускаем параллельно
         best_sport = best_c.get("sport", "football")
 
         if best_sport == "tennis":
@@ -460,33 +476,64 @@ logic = твоё обоснование на русском
 best_index = твой выбор (1-{len(top)}), может совпадать с GPT
 warning = предупреждение если есть риск (иначе пустая строка)"""
 
-        try:
-            resp = groq_client.chat.completions.create(
-                model=llama_model,
-                messages=[
-                    {"role": "system", "content": f"Тактический {analyst_role}. Отвечай JSON."},
-                    {"role": "user", "content": prompt_llama},
-                ],
-                temperature=0.3,
-                max_tokens=250,
-            )
-            raw = resp.choices[0].message.content.strip()
-            # Llama может вернуть JSON внутри ```
-            if "```" in raw:
-                raw = raw.split("```")[1].lstrip("json").strip()
-            data = json.loads(raw)
-            llama_best_idx = max(0, min(len(top)-1, int(data.get("best_index", 1)) - 1))
-            llama_logic    = str(data.get("logic", ""))
-            llama_warning  = str(data.get("warning", ""))
-            llama_agrees   = bool(data.get("agree", True))
-            logger.info(f"[CHIMERA Llama] Выбор #{llama_best_idx+1} | Согласен: {llama_agrees}")
+        def _call_llama():
+            try:
+                resp = groq_client.chat.completions.create(
+                    model=llama_model,
+                    messages=[
+                        {"role": "system", "content": f"Тактический {analyst_role}. Отвечай JSON."},
+                        {"role": "user", "content": prompt_llama},
+                    ],
+                    temperature=0.3,
+                    max_tokens=250,
+                )
+                raw = resp.choices[0].message.content.strip()
+                if "```" in raw:
+                    raw = raw.split("```")[1].lstrip("json").strip()
+                return json.loads(raw)
+            except Exception as e:
+                logger.warning(f"[CHIMERA Llama] Ошибка: {e}")
+                return None
+    else:
+        def _call_llama():
+            return None
 
-            # Сохраняем в кандидата
-            best_c["llama_logic"]   = llama_logic
-            best_c["llama_warning"] = llama_warning
-            best_c["llama_agrees"]  = llama_agrees
-        except Exception as e:
-            logger.warning(f"[CHIMERA Llama] Ошибка: {e}")
+    # ── Запускаем GPT и Llama параллельно ────────────────────────────────
+    _gpt_data   = None
+    _llama_data = None
+    with _cf_ai.ThreadPoolExecutor(max_workers=2) as _ai_pool:
+        _f_gpt   = _ai_pool.submit(_call_gpt)
+        _f_llama = _ai_pool.submit(_call_llama)
+        try:
+            _gpt_data = _f_gpt.result(timeout=25)
+        except Exception as _e:
+            logger.warning(f"[CHIMERA GPT] Таймаут/ошибка: {_e}")
+        try:
+            _llama_data = _f_llama.result(timeout=25)
+        except Exception as _e:
+            logger.warning(f"[CHIMERA Llama] Таймаут/ошибка: {_e}")
+
+    if _gpt_data:
+        gpt_best_idx   = max(0, min(len(top)-1, int(_gpt_data.get("best", 1)) - 1))
+        gpt_confidence = int(_gpt_data.get("confidence", 60))
+        gpt_reason     = str(_gpt_data.get("reason", ""))
+        gpt_skip       = [max(0, int(i)-1) for i in _gpt_data.get("skip", [])]
+        gpt_reasons    = _gpt_data.get("reasons", [])  # оценки всех кандидатов
+        logger.info(f"[CHIMERA GPT] Выбор #{gpt_best_idx+1} | {gpt_confidence}%")
+        # Раздаём индивидуальные оценки всем кандидатам
+        for i, c in enumerate(top):
+            if i < len(gpt_reasons) and gpt_reasons[i]:
+                c["ai_reason_individual"] = str(gpt_reasons[i])
+
+    if _llama_data:
+        llama_best_idx = max(0, min(len(top)-1, int(_llama_data.get("best_index", 1)) - 1))
+        llama_logic    = _strip_cjk(str(_llama_data.get("logic", "")))
+        llama_warning  = _strip_cjk(str(_llama_data.get("warning", "")))
+        llama_agrees   = bool(_llama_data.get("agree", True))
+        logger.info(f"[CHIMERA Llama] Выбор #{llama_best_idx+1} | Согласен: {llama_agrees}")
+        best_c["llama_logic"]   = llama_logic
+        best_c["llama_warning"] = llama_warning
+        best_c["llama_agrees"]  = llama_agrees
 
     # ── Применяем баллы ────────────────────────────────────────────────────
     for i, c in enumerate(top):
@@ -514,6 +561,10 @@ warning = предупреждение если есть риск (иначе п
         elif is_gpt_skip:
             c["ai_confirmed"]  = False
             c["chimera_score"] = max(0, c["chimera_score"] - AI_PENALTY)
+        else:
+            # AI не выбрал и не пропустил — даём индивидуальную оценку если есть
+            if c.get("ai_reason_individual"):
+                c["ai_reason"] = c["ai_reason_individual"]
 
     candidates.sort(key=lambda x: x["chimera_score"], reverse=True)
     return candidates
@@ -567,7 +618,7 @@ def _format_match_time(commence_time: str) -> tuple:
         return "", False
 
 
-MIN_CHIMERA_SCORE_T3 = 20  # пониженный порог для CS2 Тир 3
+MIN_CHIMERA_SCORE_T3 = 30  # CS2 Тир 3 — тот же порог что и остальные
 
 
 def format_chimera_signals(candidates: List[Dict], show_top: int = 3) -> str:
@@ -672,6 +723,15 @@ def format_chimera_signals(candidates: List[Dict], show_top: int = 3) -> str:
         score_lines.append(f"├ {icon} Движение линии: {best['line_pts']:+.0f} pts")
     if best.get("h2h_pts", 0):
         score_lines.append(f"├ ⚔️ H2H история: {best['h2h_pts']:+.0f} pts")
+    # Исторический сдвиг Pinnacle
+    hist_mov = best.get("hist_movement")
+    if hist_mov and hist_mov.get("score_boost"):
+        boost = hist_mov["score_boost"]
+        label_mov = hist_mov.get("label", "")
+        h_ago = hist_mov.get("data_age_hours", 24)
+        score_lines.append(
+            f"├ {label_mov} ({boost:+.0f} pts, {h_ago}ч назад)"
+        )
     score_lines[-1] = score_lines[-1].replace("├", "└")
     lines += score_lines
 
@@ -680,23 +740,11 @@ def format_chimera_signals(candidates: List[Dict], show_top: int = 3) -> str:
     if totals_block:
         lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━", totals_block]
 
-    # Остальные кандидаты
-    if len(visible) > 1:
-        lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━", "📋 <b>Ещё варианты:</b>"]
-        for c in visible[1:]:
-            ai_tag = " 🧠" if c.get("ai_confirmed") else ""
-            sp = c.get("sport", "football")
-            s_emoji = "🎮" if sp == "cs2" else ("🎾" if sp == "tennis" else ("🏀" if sp == "basketball" else "⚽"))
-            t_str, t_live = _format_match_time(c.get("commence_time", ""))
-            t_tag = " 🟢LIVE" if t_live else (f" 🕐{t_str}" if t_str else "")
-            lines.append(
-                f"• {s_emoji} {c['home']} vs {c['away']} — "
-                f"{c['team']} ({c['outcome']}) @ {c['odds']} "
-                f"[{c['chimera_score']:.0f} pts]{ai_tag}{t_tag}"
-            )
-
-    lines += ["", "#ChimeraAI #Сигнал"]
-    return "\n".join(lines)
+    lines += [""]
+    result = "\n".join(lines)
+    if len(result) > 4000:
+        result = result[:3990] + "\n…"
+    return result
 
 
 def _format_totals_block(candidate: dict) -> str:

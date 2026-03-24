@@ -13,3 +13,7 @@ requests
 aiohttp
 python-dotenv
 kagglehub
+
+duckduckgo-search>=6.0
+beautifulsoup4>=4.12
+lxml>=5.0

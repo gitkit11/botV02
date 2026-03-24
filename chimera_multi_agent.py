@@ -175,11 +175,11 @@ def run_agent_market_verdict(
 
 Твои задачи:
 1. МАРКЕТ: Есть ли value bet? Сравни наши вероятности с коэффициентами. Value = наша вер. > 1/коэф на 5%+
-2. ВЕРДИКТ: Одно предложение — кто победит, с какой вероятностью, ставить или пропустить.
+2. ВЕРДИКТ: Одно предложение — кто победит и с какой вероятностью. НЕ пиши ставить или пропустить — это решает математическая модель по EV.
 
 Формат:
 **МАРКЕТ:** [есть value @ кэф X / нет value / коэффициент справедливый]
-**CHIMERA VERDICT:** [команда/игрок] победит — [X]% | [СТАВИТЬ @ кэф Y / ПРОПУСТИТЬ]
+**CHIMERA VERDICT:** [команда/игрок] победит — [X]%
 
 Максимум 4 строки."""
 
@@ -337,37 +337,40 @@ def format_verdict_block(
     if stat and not stat.startswith("❌"):
         stat_short = stat.split("\n")[0].replace("**СТАТИСТИКА:**", "").replace("**", "").strip()
         if stat_short:
-            lines.append(f"📊 <b>Статистик:</b> {stat_short[:120]}")
+            lines.append(f"📊 <b>Лев:</b> {stat_short[:120]}")
 
     # Скептик — коротко
     if skep and not skep.startswith("❌"):
         skep_lines = [l for l in skep.split("\n") if "риск" in l.lower() or "**риски" in l.lower()]
         if skep_lines:
             skep_short = skep_lines[0].replace("**РИСКИ:**", "").replace("**", "").strip()
-            lines.append(f"⚠️ <b>Скептик:</b> {skep_short[:120]}")
+            lines.append(f"⚠️ <b>Козёл:</b> {skep_short[:120]}")
 
     # Маркет
     if best_value:
-        lines.append(f"📉 <b>Маркет:</b> Value @ {best_value['odds']} | наша вер. {best_value['prob']}% vs бук. {round(100/best_value['odds'])}% | EV <b>{best_value['ev']:+.1f}%</b>")
+        lines.append(f"💎 <b>Ценность:</b> @ {best_value['odds']} | наша вер. {best_value['prob']}% vs бук. {round(100/best_value['odds'])}% | EV <b>{best_value['ev']:+.1f}%</b>")
     else:
-        lines.append("📉 <b>Маркет:</b> Value bet не найден")
+        lines.append("💎 <b>Ценность:</b> value bet не найден")
 
-    # Финальный вердикт от GPT
+    # Финальный вердикт — сигнал всегда из математики (EV), не из GPT-текста
+    signal = "🟢 СТАВИТЬ" if best_value else "⏸ НЕТ VALUE"
+    if best_value:
+        signal_detail = f" @ {best_value['odds']} | EV {best_value['ev']:+.1f}%"
+    else:
+        signal_detail = ""
+
+    # Дополняем текстом GPT если он есть (только прогноз без беттинг-решения)
+    gpt_pred = ""
     if verdict and not verdict.startswith("❌"):
-        verdict_line = ""
         for line in verdict.split("\n"):
             if "chimera verdict" in line.lower() or "вердикт" in line.lower():
-                verdict_line = line.replace("**CHIMERA VERDICT:**", "").replace("**", "").strip()
+                clean = line.replace("**CHIMERA VERDICT:**", "").replace("**", "").strip()
+                # Убираем если GPT всё же написал СТАВИТЬ/ПРОПУСТИТЬ
+                for drop in ["| СТАВИТЬ", "| ПРОПУСТИТЬ", "| СТАВИТЬ", "| ПРОПУСТИТЬ"]:
+                    clean = clean.split(drop)[0].strip().rstrip("|").strip()
+                gpt_pred = clean
                 break
-        if not verdict_line:
-            verdict_line = verdict.split("\n")[-1].strip()
-        if verdict_line:
-            lines.append(f"")
-            lines.append(f"🎯 <b>ИТОГ: {verdict_line[:200]}</b>")
-    else:
-        # Fallback — генерируем из данных
-        signal = "🟢 СТАВИТЬ" if best_value else "🔴 ПРОПУСТИТЬ"
-        lines.append(f"")
-        lines.append(f"🎯 <b>ИТОГ: {favorite_name} — {fav_prob}% | {signal}</b>")
+
+    # Вердикт не дублируем — он уже показан в шапке отчёта
 
     return "\n".join(lines)
