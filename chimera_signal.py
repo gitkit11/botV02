@@ -192,14 +192,15 @@ def compute_chimera_score(
         if not odds or odds <= 1.20 or prob <= 0:
             continue
 
-        # Применяем исторический калибратор (только для футбола)
-        prob = calibrate_probability(prob, cal)
         implied = _implied_prob(odds)
 
-        # Для футбола: если наша вероятность > 18% выше рыночной — это ложный сигнал
+        # Для футбола: проверяем расхождение ДО калибровки (используем сырую вероятность модели)
         # Данные: крупные расхождения с рынком (>18pp) дают ~15-20% точность (хуже случайного)
         if apply_calibration and outcome_key in ("П1", "П2") and (prob - implied) > 0.18:
             continue
+
+        # Применяем исторический калибратор (только для футбола) — после проверки дивергенции
+        prob = calibrate_probability(prob, cal)
 
         # ── 1. ELO преимущество (0 → 25 pts) ─────────────────────────────
         elo_gap = max(0, elo_fav - elo_opp) if (elo_fav > 0 and elo_opp > 0) else 0
