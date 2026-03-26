@@ -2340,7 +2340,7 @@ async def handle_callback(call: types.CallbackQuery):
         ens_best_label = ens_best_map.get(ens_best_key, home_team)
 
         # Используем реальный bet_signal из football_ai_signals (не из GPT-ответа)
-        _fb_bet_signal = football_ai_signals[0]["tier"] if football_ai_signals else "НЕ СТАВИТЬ"
+        _fb_bet_signal = "СТАВИТЬ" if football_ai_signals else "НЕ СТАВИТЬ"
         prediction_data = {
             "gpt_verdict": gpt_result.get("recommended_outcome", ""),
             "llama_verdict": llama_result.get("recommended_outcome", ""),
