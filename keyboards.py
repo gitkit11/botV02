@@ -165,7 +165,7 @@ def build_matches_keyboard(matches, page: int = 0):
 
     # Служебные кнопки (каждая в свою строку)
     builder.button(text="🔄 Обновить", callback_data="refresh_matches")
-    builder.button(text="🏆 Другая лига", callback_data="change_league")
+    builder.button(text="⬅️ К лигам", callback_data="change_league")
     builder.button(text="🏠 Меню", callback_data="back_to_main")
 
     # Пагинация — 2 маленькие кнопки в одну строку
@@ -193,9 +193,10 @@ def build_markets_keyboard(match_index):
     builder.button(text="🏆 Победитель матча", callback_data=f"mkt_winner_{match_index}")
     builder.button(text="⚽ Голы (тотал 2.5 / обе забьют)", callback_data=f"mkt_goals_{match_index}")
     builder.button(text="⚖️ Гандикапы / Двойной шанс", callback_data=f"mkt_handicap_{match_index}")
-    builder.button(text="⬅️ Другой матч", callback_data="back_to_matches")
-    builder.button(text="🏠 Главное меню", callback_data="back_to_main")
-    builder.adjust(1)
+    builder.button(text="⬅️ К матчам", callback_data="back_to_matches")
+    builder.button(text="🏆 К лигам", callback_data="change_league")
+    builder.button(text="🏠 Меню", callback_data="back_to_main")
+    builder.adjust(1, 1, 1, 2, 1)
     return builder.as_markup()
 
 
@@ -204,9 +205,10 @@ def build_back_to_markets_keyboard(match_index):
     builder = InlineKeyboardBuilder()
     builder.button(text="↩️ К анализу", callback_data=f"back_to_report_football_{match_index}")
     builder.button(text="🎯 Другой рынок", callback_data=f"show_markets_{match_index}")
-    builder.button(text="⬅️ Матчи", callback_data="back_to_matches")
+    builder.button(text="⬅️ К матчам", callback_data="back_to_matches")
+    builder.button(text="🏆 К лигам", callback_data="change_league")
     builder.button(text="🏠 Меню", callback_data="back_to_main")
-    builder.adjust(2)
+    builder.adjust(2, 2, 1)
     return builder.as_markup()
 
 

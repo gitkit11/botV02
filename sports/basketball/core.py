@@ -495,14 +495,13 @@ def calculate_basketball_win_prob(home: str, away: str,
     total_form = h_form_factor + a_form_factor
     h_form_prob = h_form_factor / total_form if total_form > 0 else 0.50
 
-    # Домашнее преимущество
-    home_factor = HOME_WIN_RATE_NBA  # 0.595
+    # Домашнее преимущество уже учтено в ELO (+50) и рыночных коэффициентах
+    # weight_home=0 в BASKETBALL_CFG — не двойной счёт
 
     # Финальная вероятность (веса из BASKETBALL_CFG)
     h_prob = (
         h_elo_prob  * weight_elo  +
         h_odds_prob * weight_odds +
-        home_factor * weight_home +
         h_form_prob * weight_form
     )
 
@@ -511,6 +510,23 @@ def calculate_basketball_win_prob(home: str, away: str,
     a_fatigue = _fatigue_penalty(away, league_key)
     # Применяем разницу: если оба устали одинаково — нейтрально
     h_prob += (a_fatigue - h_fatigue)  # хозяин получает выгоду если гость устал больше
+
+    # Штраф за травмы ключевых игроков (NBA через ESPN API, -2% за каждого missing)
+    if "nba" in league_key.lower() or league_key == "basketball_nba":
+        try:
+            from injuries import get_nba_injuries as _get_inj
+            h_inj = _get_inj(home)
+            a_inj = _get_inj(away)
+            h_missing = h_inj.get("total_missing", 0)
+            a_missing = a_inj.get("total_missing", 0)
+            # Каждый травмированный игрок = -2% вероятности, макс -10%
+            h_inj_pen = min(0.10, h_missing * 0.02)
+            a_inj_pen = min(0.10, a_missing * 0.02)
+            h_prob += (a_inj_pen - h_inj_pen)
+        except Exception:
+            h_inj = a_inj = {"total_missing": 0, "impact": "none", "injured": [], "doubts": []}
+    else:
+        h_inj = a_inj = None
 
     h_prob = min(0.95, max(0.05, round(h_prob, 3)))
     a_prob = round(1 - h_prob, 3)
@@ -540,8 +556,12 @@ def calculate_basketball_win_prob(home: str, away: str,
         best_pick  = away
         best_odds  = odds["away_win"] if odds else 0
     try:
-        from signal_engine import get_bet_tier as _get_tier
-        bet_signal = _get_tier(best_prob, best_ev, "basketball") if both_odds_present else "НЕ СТАВИТЬ"
+        from signal_engine import get_bet_tier as _get_tier, BASKETBALL_CFG as _BCFG
+        _max_bball_odds = _BCFG.get("max_odds", 2.2)
+        if best_odds > _max_bball_odds:
+            bet_signal = "НЕ СТАВИТЬ"
+        else:
+            bet_signal = _get_tier(best_prob, best_ev, "basketball") if both_odds_present else "НЕ СТАВИТЬ"
     except Exception:
         bet_signal = "СТАВИТЬ 🔥" if (best_ev > 5 and both_odds_present) else "НЕ СТАВИТЬ"
 
@@ -602,6 +622,8 @@ def calculate_basketball_win_prob(home: str, away: str,
         "away_rest_days":  get_rest_days(away, league_key),
         "home_fatigue":    h_fatigue,
         "away_fatigue":    a_fatigue,
+        "home_injuries":   h_inj,
+        "away_injuries":   a_inj,
     }
 
 

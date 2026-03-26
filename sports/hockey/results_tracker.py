@@ -23,6 +23,8 @@ HOCKEY_RESULT_LEAGUES = [
     "icehockey_nhl",
     "icehockey_sweden_hockey_league",
     "icehockey_ahl",
+    "icehockey_liiga",
+    "icehockey_sweden_allsvenskan",
 ]
 
 
@@ -31,13 +33,13 @@ def _fetch_scores(league_key: str) -> list:
         return []
     try:
         from odds_cache import get_scores as _get_scores
-        return _get_scores(league_key, days_from=2)
+        return _get_scores(league_key, days_from=3)
     except ImportError:
         pass
     try:
         r = requests.get(
             f"https://api.the-odds-api.com/v4/sports/{league_key}/scores/",
-            params={"apiKey": THE_ODDS_API_KEY, "daysFrom": 2},
+            params={"apiKey": THE_ODDS_API_KEY, "daysFrom": 3},
             timeout=10,
         )
         return r.json() if r.ok else []

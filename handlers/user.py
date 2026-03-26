@@ -15,7 +15,7 @@ from database import (
     upsert_user, log_action,
     set_user_language, get_user_language,
     set_user_bankroll, get_user_bankroll,
-    get_pl_stats, mark_user_bet,
+    get_pl_stats, mark_user_bet, get_user_profile,
 )
 from i18n import t
 from keyboards import build_main_keyboard
@@ -27,8 +27,28 @@ router = Router()
 
 @router.message(Command("start"))
 async def send_welcome(message: types.Message):
+    from access import is_channel_member, MSG_NOT_IN_CHANNEL
     upsert_user(message.from_user.id, message.from_user.username or "", message.from_user.first_name or "")
     log_action(message.from_user.id, "/start")
+
+    # Шаг 1: проверка подписки на канал (для всех, кроме админов)
+    if message.from_user.id not in ADMIN_IDS:
+        in_channel = await is_channel_member(message.from_user.id, message.bot)
+        if not in_channel:
+            kb_ch = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(
+                    text="📢 Подписаться на канал",
+                    url="https://t.me/chimera_bet_community"
+                )],
+                [types.InlineKeyboardButton(
+                    text="✅ Я подписался",
+                    callback_data="reenter_new"
+                )],
+            ])
+            await message.answer(MSG_NOT_IN_CHANNEL, parse_mode="HTML", reply_markup=kb_ch)
+            return
+
+    # Шаг 2: выбор языка (всегда, для всех)
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[
         types.InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_ru"),
         types.InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en"),
@@ -53,6 +73,23 @@ async def _run_onboarding(call: types.CallbackQuery, lang: str):
     await call.message.answer(t("benefits", lang), parse_mode="HTML", reply_markup=enter_kb)
 
 
+@router.callback_query(lambda c: c.data in ("reenter_main", "reenter_new"))
+async def cb_reenter(call: types.CallbackQuery):
+    """Повторная проверка канала после нажатия «Я подписался»."""
+    from access import is_channel_member
+    in_channel = await is_channel_member(call.from_user.id, call.bot)
+    if not in_channel:
+        await call.answer("Подписка не найдена. Попробуй ещё раз.", show_alert=True)
+        return
+    await call.answer()
+    await call.message.delete()
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_ru"),
+        types.InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en"),
+    ]])
+    await call.message.answer("🐉", reply_markup=kb)
+
+
 @router.callback_query(lambda c: c.data in ("set_lang_ru", "set_lang_en"))
 async def cb_set_language(call: types.CallbackQuery):
     lang = call.data.replace("set_lang_", "")
@@ -65,6 +102,25 @@ async def cb_set_language(call: types.CallbackQuery):
 @router.callback_query(lambda c: c.data and c.data.startswith("enter_chimera_"))
 async def cb_enter_chimera(call: types.CallbackQuery):
     lang = call.data.replace("enter_chimera_", "")
+
+    from access import is_channel_member, MSG_NOT_IN_CHANNEL
+    if call.from_user.id not in ADMIN_IDS:
+        in_channel = await is_channel_member(call.from_user.id, call.bot)
+        if not in_channel:
+            kb_ch = types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(
+                    text="📢 Подписаться на канал",
+                    url="https://t.me/chimera_bet_community"
+                )],
+                [types.InlineKeyboardButton(
+                    text="✅ Я подписался",
+                    callback_data=f"enter_chimera_{lang}"
+                )],
+            ])
+            await call.answer()
+            await call.message.answer(MSG_NOT_IN_CHANNEL, parse_mode="HTML", reply_markup=kb_ch)
+            return
+
     await call.message.delete()
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, get_matches)

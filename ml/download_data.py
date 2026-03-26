@@ -26,6 +26,7 @@ DATA_DIR.mkdir(exist_ok=True)
 # Лиги которые скачиваем
 LEAGUES = {
     "E0":  "Premier League",
+    "E1":  "Championship",
     "SP1": "La Liga",
     "D1":  "Bundesliga",
     "I1":  "Serie A",

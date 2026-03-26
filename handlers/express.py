@@ -70,7 +70,7 @@ async def cb_express_variant(call: types.CallbackQuery):
         await status.edit_text(card, parse_mode="HTML", reply_markup=back_kb)
     except Exception as e:
         logger.error(f"[Экспресс] Ошибка: {e}", exc_info=True)
-        await status.edit_text("⚠️ Не удалось построить экспресс. Попробуй позже.", parse_mode="HTML")
+        await status.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.", parse_mode="HTML")
 
 
 @router.callback_query(lambda c: c.data == "express_back")

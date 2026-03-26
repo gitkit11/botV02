@@ -387,13 +387,37 @@ def format_expert_block(result: dict, home: str, away: str) -> str:
 
     # Reddit-мнения (отфильтрованные AI)
     if reddit_ops:
+        import re as _re
+        def _clean_md(text: str) -> str:
+            """Полная очистка Reddit markdown → plain text."""
+            # Таблицы markdown: строки вида |...|..| или |:-:| — убираем целиком
+            text = _re.sub(r'^\|.*\|.*$', '', text, flags=_re.MULTILINE)
+            # [text](url) → text
+            text = _re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)
+            # [](/TEAM) и похожие пустые ссылки → ''
+            text = _re.sub(r'\[/?[^\]]*\]\([^)]*\)', '', text)
+            # Остатки скобок-ссылок вида (url) или (#anchor)
+            text = _re.sub(r'\(https?://[^\)]+\)', '', text)
+            text = _re.sub(r'\(#[^)]+\)', '', text)
+            # ## заголовки
+            text = _re.sub(r'^#+\s*', '', text, flags=_re.MULTILINE)
+            # **bold** и *italic*
+            text = _re.sub(r'\*{1,2}([^*]*)\*{1,2}', r'\1', text)
+            # Пустые строки и лишние пробелы
+            text = _re.sub(r'\n\s*\n', ' ', text)
+            text = _re.sub(r'\s+', ' ', text).strip()
+            return text
         lines.append("")
         lines.append("💬 <b>Reddit (проверено AI):</b>")
         for op in reddit_ops[:3]:
             score = op.get("ai_score", "?")
-            title = op["title"][:90]
-            desc  = op.get("description", "")[:120]
+            title = _clean_md(op["title"][:90])
+            desc  = _clean_md(op.get("description", ""))
             pub   = op.get("publisher", "")
+            if not desc or len(desc) < 10:
+                desc = ""
+            else:
+                desc = desc[:120]
             # Иконка важности
             if isinstance(score, (int, float)):
                 quality = "🔥" if score >= 9 else ("✅" if score >= 7 else ("💡" if score >= 5 else "📊"))

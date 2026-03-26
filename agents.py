@@ -238,10 +238,18 @@ def run_statistician_agent(prophet_data, team_stats_text=None,
 
     stats_block = f"\nСтатистика сезона (API-Football):\n{team_stats_text}" if team_stats_text else ""
 
+    # Память агента — история прошлых прогнозов на эти команды
+    memory_block = ""
+    try:
+        from agent_memory import get_match_memory_context
+        memory_block = get_match_memory_context(home_team, away_team, "football")
+    except Exception:
+        pass
+
     prompt = f"""Ты — лучший в мире футбольный статистик. Анализируй только числовые данные, никакой воды.
 
 ДАННЫЕ ДЛЯ АНАЛИЗА:
-Нейросеть Пророк (10 сезонов АПЛ): П1={_pd[1]:.1%} | Х={_pd[0]:.1%} | П2={_pd[2]:.1%}{poisson_block}{elo_block}{form_block}{h2h_block}{stats_block}
+Нейросеть Пророк (10 сезонов АПЛ): П1={_pd[1]:.1%} | Х={_pd[0]:.1%} | П2={_pd[2]:.1%}{poisson_block}{elo_block}{form_block}{h2h_block}{stats_block}{memory_block}
 
 ЗАДАЧИ:
 1. Сопоставь все три модели (Пророк + Пуассон + ELO) — они согласуются или расходятся?
@@ -440,6 +448,17 @@ def run_football_chimera_agents(
         match_info += f"\nНОВОСТИ: {news_summary[:300]}"
     if stats_text:
         match_info += f"\nСТАТИСТИКА: {stats_text[:300]}"
+    # Память агента — история прогнозов на эти команды
+    try:
+        from agent_memory import get_match_memory_context, get_h2h_memory
+        _mem = get_match_memory_context(home_team, away_team, "football")
+        _h2h_mem = get_h2h_memory(home_team, away_team, "football")
+        if _mem:
+            match_info += _mem
+        if _h2h_mem:
+            match_info += _h2h_mem
+    except Exception:
+        pass
 
     # Нормализуем ключи
     probs = {

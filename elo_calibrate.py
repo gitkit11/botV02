@@ -268,23 +268,24 @@ def build_form_tracker(all_matches: list) -> dict:
                 form[team] = []
             form[team].append(res)
 
-    # Оставляем только последние 5
-    return {team: results[-5:] for team, results in form.items()}
+    # Оставляем только последние 10
+    return {team: results[-10:] for team, results in form.items()}
 
 
 def form_elo_bonus(form_results: list) -> float:
     """
-    Считает бонус/штраф к ELO на основе формы последних 5 матчей.
-    W=+8, D=0, L=-8 (максимум ±40 очков)
+    Считает бонус/штраф к ELO на основе формы последних 10 матчей.
+    W=+6, D=0, L=-6 (максимум ±60 очков при 10 матчах)
     """
     bonus = 0
-    weights = [0.6, 0.8, 1.0, 1.2, 1.4]  # Последние матчи важнее
+    # Веса: старый матч=0.4, новый матч=1.3 (линейный рост)
+    n = len(form_results)
     for i, res in enumerate(form_results):
-        w = weights[i] if i < len(weights) else 1.0
+        w = 0.4 + (0.9 * i / max(n - 1, 1))
         if res == "W":
-            bonus += 8 * w
+            bonus += 6 * w
         elif res == "L":
-            bonus -= 8 * w
+            bonus -= 6 * w
     return round(bonus, 1)
 
 

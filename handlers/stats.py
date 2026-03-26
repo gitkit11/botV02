@@ -41,31 +41,34 @@ async def get_stats_command(message: types.Message):
     all_total   = sum(all_stats.get(k, {}).get("total", 0)         for k in _main_sports)
     all_checked = sum(all_stats.get(k, {}).get("total_checked", 0) for k in _main_sports)
     all_correct = sum(all_stats.get(k, {}).get("correct", 0)       for k in _main_sports)
+    all_pending = sum(all_stats.get(k, {}).get("pending", 0)       for k in _main_sports)
     all_acc     = round(all_correct / all_checked * 100, 1) if all_checked > 0 else 0
 
     stats_text = "📊 *Статистика Chimera AI*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     if all_checked > 0:
         stats_text += (
-            f"🎯 Угадано: *{all_correct} из {all_checked}* прогнозов\n"
+            f"🎯 *Общий бот (без CS2):* *{all_correct} из {all_checked}*\n"
             f"`{_acc_bar(all_acc)}` *{all_acc}%*\n"
-            f"📋 Всего в базе: *{all_total}* | Ожидают результата: *{all_total - all_checked}*\n"
+            f"📋 Всего в базе: *{all_total}* | Ожидают результата: *{all_pending}*\n"
         )
     stats_text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
     has_data = False
-    for sport_key, sport_label in [
+    _sports_list = [
         ("football",   "⚽ Футбол"),
         ("tennis",     "🎾 Теннис"),
         ("basketball", "🏀 Баскетбол"),
         ("hockey",     "🏒 Хоккей"),
         ("cs2",        "🎮 CS2 _(бета)_"),
-    ]:
+    ]
+    _sports_list.sort(key=lambda x: all_stats.get(x[0], {}).get("accuracy", 0), reverse=True)
+    for sport_key, sport_label in _sports_list:
         s = all_stats.get(sport_key, {})
         total   = s.get("total", 0)
         checked = s.get("total_checked", 0)
         correct = s.get("correct", 0)
         acc     = s.get("accuracy", 0)
-        pending = total - checked
+        pending = s.get("pending", total - checked)  # реально ожидают (без expired)
 
         if total == 0:
             continue
@@ -87,8 +90,10 @@ async def get_stats_command(message: types.Message):
             if pending > 0:
                 stats_text += f"  ·  ⏳ ждём *{pending}*"
             stats_text += "\n"
+        elif pending > 0:
+            stats_text += f"📋 Прогнозов: *{total}* | ⏳ Ожидают результата: *{pending}*\n"
         else:
-            stats_text += f"📋 Прогнозов: *{total}* | ⏳ Ожидают результата\n"
+            stats_text += f"📋 Прогнозов: *{total}* | ⚠️ Результаты не получены\n"
 
         sport_icons = [
             "✅" if r.get("is_correct") == 1 else "❌"
@@ -106,16 +111,22 @@ async def get_stats_command(message: types.Message):
                 if mt > 0:
                     ma = mc / mt * 100
                     stats_text += f"📅 {mn}: *{mc}/{mt}* ({ma:.0f}%)\n"
+
+        if sport_key == "cs2":
+            stats_text += "_⚠️ CS2 не входит в общий процент бота_\n"
+
         stats_text += "\n"
 
     chimera_history = get_chimera_signal_history(limit=10)
     if chimera_history:
-        ch_checked = [r for r in chimera_history if r["is_correct"] is not None]
+        # is_correct: 1=win, 0=loss, -1=expired (результат не получен), None=pending
+        ch_checked = [r for r in chimera_history if r["is_correct"] in (0, 1)]
         ch_wins    = sum(1 for r in ch_checked if r["is_correct"] == 1)
         ch_pending = sum(1 for r in chimera_history if r["is_correct"] is None)
+        ch_expired = sum(1 for r in chimera_history if r["is_correct"] == -1)
         ch_acc     = round(ch_wins / len(ch_checked) * 100) if ch_checked else 0
         ch_streak  = _streak_str(
-            [{"is_correct": r["is_correct"]} for r in chimera_history if r["is_correct"] is not None]
+            [{"is_correct": r["is_correct"]} for r in chimera_history if r["is_correct"] in (0, 1)]
         )
         stats_text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         stats_text += f"*🎯 Сигналы дня*"
@@ -127,6 +138,8 @@ async def get_stats_command(message: types.Message):
             stats_text += f"🎯 *{ch_wins}/{len(ch_checked)}* угадано"
             if ch_pending:
                 stats_text += f"  ·  ⏳ ждём *{ch_pending}*"
+            if ch_expired:
+                stats_text += f"  ·  ⚠️ нет результата: *{ch_expired}*"
             stats_text += "\n"
         else:
             stats_text += f"⏳ Ждём результаты: *{ch_pending}*\n"
@@ -254,7 +267,7 @@ async def cmd_cs2stats(message: types.Message):
         from sports.cs2.results_tracker import get_cs2_bet_stats
         s = get_cs2_bet_stats()
         if "error" in s:
-            await message.answer(f"❌ Ошибка: {s['error']}")
+            await message.answer("😔 Произошёл сбой. Напиши нам в поддержку.")
             return
 
         acc_icon = lambda a: "🟢" if a >= 60 else ("🟡" if a >= 50 else "🔴")
@@ -295,7 +308,7 @@ async def cmd_cs2stats(message: types.Message):
         await message.answer(text, parse_mode="Markdown", reply_markup=back_kb.as_markup())
     except Exception as e:
         logger.error(f"[CS2 статистика] Ошибка: {e}")
-        await message.answer("⚠️ Не удалось загрузить статистику CS2. Попробуй позже.")
+        await message.answer("😔 Произошёл сбой. Напиши нам в поддержку.")
 
 
 @router.message(Command("footballstats"))
@@ -353,7 +366,7 @@ async def cmd_footballstats(message: types.Message):
         await message.answer(text, parse_mode="Markdown", reply_markup=back_kb.as_markup())
     except Exception as e:
         logger.error(f"[Футбол статистика] Ошибка: {e}")
-        await message.answer("⚠️ Не удалось загрузить статистику. Попробуй позже.")
+        await message.answer("😔 Произошёл сбой. Напиши нам в поддержку.")
 
 
 @router.message(Command("results"))

@@ -5,7 +5,7 @@ from typing import Optional, List, Dict
 
 DB_FILE = "chimera_predictions.db"
 
-_VALID_SPORTS = {"football", "cs2", "tennis", "basketball"}
+_VALID_SPORTS = {"football", "cs2", "tennis", "basketball", "hockey"}
 
 def _validate_sport(sport: str) -> str:
     if sport not in _VALID_SPORTS:
@@ -320,10 +320,14 @@ def init_db():
             result_checked_at TIMESTAMP
         );
         """)
-        # Миграция: добавляем bet_signal если нет
+        # Миграция: добавляем недостающие колонки
         _t_cols = [r[1] for r in cursor.execute("PRAGMA table_info(tennis_predictions)").fetchall()]
         if "bet_signal" not in _t_cols:
             cursor.execute("ALTER TABLE tennis_predictions ADD COLUMN bet_signal TEXT")
+        if "gpt_verdict" not in _t_cols:
+            cursor.execute("ALTER TABLE tennis_predictions ADD COLUMN gpt_verdict TEXT")
+        if "llama_verdict" not in _t_cols:
+            cursor.execute("ALTER TABLE tennis_predictions ADD COLUMN llama_verdict TEXT")
 
         # Создание таблицы basketball_predictions
         cursor.execute("""
@@ -370,6 +374,39 @@ def init_db():
         if "roi_value_bet" not in _bb_cols:
             cursor.execute("ALTER TABLE basketball_predictions ADD COLUMN roi_value_bet REAL")
 
+        # Создание таблицы hockey_predictions
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS hockey_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id TEXT UNIQUE,
+            match_date TEXT,
+            home_team TEXT,
+            away_team TEXT,
+            league TEXT,
+            gpt_verdict TEXT,
+            llama_verdict TEXT,
+            bet_signal TEXT,
+            recommended_outcome TEXT,
+            elo_home INTEGER,
+            elo_away INTEGER,
+            ensemble_home REAL,
+            ensemble_away REAL,
+            ensemble_best_outcome TEXT,
+            bookmaker_odds_home REAL,
+            bookmaker_odds_away REAL,
+            total_line REAL,
+            total_lean TEXT,
+            real_outcome TEXT,
+            is_correct INTEGER,
+            roi_outcome REAL,
+            value_bet_correct INTEGER,
+            roi_value_bet REAL,
+            prediction_data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            result_checked_at TIMESTAMP
+        );
+        """)
+
         # Таблица пользователей (личный кабинет)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -389,10 +426,26 @@ def init_db():
         _u_cols = [r[1] for r in cursor.execute("PRAGMA table_info(users)").fetchall()]
         if "analyses_basketball" not in _u_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN analyses_basketball INTEGER DEFAULT 0")
+        if "analyses_hockey" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN analyses_hockey INTEGER DEFAULT 0")
         if "language" not in _u_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'ru'")
         if "bankroll" not in _u_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN bankroll REAL DEFAULT NULL")
+        if "subscription_until" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN subscription_until TEXT DEFAULT NULL")
+        if "subscription_type" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN subscription_type TEXT DEFAULT 'free'")
+        if "trial_used" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN trial_used INTEGER DEFAULT 0")
+        if "weekly_analyses_used" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN weekly_analyses_used INTEGER DEFAULT 0")
+        if "weekly_reset_date" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN weekly_reset_date TEXT DEFAULT NULL")
+        if "daily_analyses_used" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN daily_analyses_used INTEGER DEFAULT 0")
+        if "daily_reset_date" not in _u_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN daily_reset_date TEXT DEFAULT NULL")
 
         # Таблица личных ставок пользователя
         cursor.execute("""
@@ -601,6 +654,9 @@ def save_prediction(
                 'home_team': home_team,
                 'away_team': away_team,
                 'league': league,
+                'gpt_verdict': gpt_verdict,
+                'llama_verdict': llama_verdict,
+                'bet_signal': bet_signal,
                 'recommended_outcome': recommended_outcome,
                 'ensemble_home': ensemble_home,
                 'ensemble_away': ensemble_away,
@@ -641,14 +697,48 @@ def save_prediction(
                 'created_at': current_time,
                 'result_checked_at': None,
             }
+        elif sport == 'hockey':
+            table_name = 'hockey_predictions'
+            data = {
+                'match_id': match_id,
+                'match_date': match_date,
+                'home_team': home_team,
+                'away_team': away_team,
+                'league': league,
+                'gpt_verdict': gpt_verdict,
+                'llama_verdict': llama_verdict,
+                'bet_signal': bet_signal,
+                'recommended_outcome': recommended_outcome,
+                'elo_home': elo_home,
+                'elo_away': elo_away,
+                'ensemble_home': ensemble_home,
+                'ensemble_away': ensemble_away,
+                'ensemble_best_outcome': ensemble_best_outcome,
+                'bookmaker_odds_home': bookmaker_odds_home,
+                'bookmaker_odds_away': bookmaker_odds_away,
+                'total_line': total_line,
+                'total_lean': total_lean,
+                'prediction_data': json.dumps(prediction_data) if prediction_data else '{}',
+                'created_at': current_time,
+                'result_checked_at': None,
+            }
         else:
             raise ValueError(f"Неизвестный вид спорта: {sport}")
 
         columns = ', '.join(data.keys())
         placeholders = ', '.join(['?' for _ in data.keys()])
-        cursor.execute(f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})", list(data.values()))
+        cursor.execute(
+            f"INSERT OR IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})",
+            list(data.values())
+        )
         conn.commit()
-        return cursor.lastrowid
+        if cursor.lastrowid:
+            return cursor.lastrowid
+        # Match already exists (UNIQUE on match_id) — return existing rowid
+        existing = cursor.execute(
+            f"SELECT rowid FROM {table_name} WHERE match_id = ?", (match_id,)
+        ).fetchone()
+        return existing[0] if existing else None
 
 def update_result(
     sport: str,
@@ -732,7 +822,7 @@ def expire_stale_predictions(days: int = 4) -> int:
     from datetime import datetime, timezone, timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-    sports = ["football", "cs2", "tennis", "basketball"]
+    sports = ["football", "cs2", "tennis", "basketball", "hockey"]
     total_expired = 0
     with _get_db_connection() as conn:
         for sport in sports:
@@ -760,7 +850,7 @@ def expire_stale_predictions(days: int = 4) -> int:
 import time as _stats_time
 _stats_cache: dict = {}
 _stats_cache_ts: dict = {}
-_STATS_TTL = 120  # 2 минуты
+_STATS_TTL = 30  # 30 секунд
 
 def get_statistics(sport: Optional[str] = None) -> Dict:
     """Возвращает статистику по прогнозам (с кешем 2 мин). Если sport не указан — общая."""
@@ -769,7 +859,7 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
     if cache_key in _stats_cache and (now - _stats_cache_ts.get(cache_key, 0)) < _STATS_TTL:
         return _stats_cache[cache_key]
     stats = {}
-    sports_to_check = [sport] if sport else ['football', 'cs2', 'tennis', 'basketball']
+    sports_to_check = [sport] if sport else ['football', 'cs2', 'tennis', 'basketball', 'hockey']
 
     with _get_db_connection() as conn:
         cursor = conn.cursor()
@@ -785,10 +875,15 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
 
             try:
                 # Общая статистика (expired = -1 не считается как checked)
-                total = cursor.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-                correct = cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_correct = 1").fetchone()[0]
+                _hf = "AND (hidden IS NULL OR hidden = 0)"
+                total = cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE 1=1 {_hf}").fetchone()[0]
+                correct = cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_correct = 1 {_hf}").fetchone()[0]
                 total_checked = cursor.execute(
-                    f"SELECT COUNT(*) FROM {table_name} WHERE is_correct IN (0, 1)"
+                    f"SELECT COUNT(*) FROM {table_name} WHERE is_correct IN (0, 1) {_hf}"
+                ).fetchone()[0]
+                # Настоящий pending — ещё нет результата (не expired)
+                true_pending = cursor.execute(
+                    f"SELECT COUNT(*) FROM {table_name} WHERE real_outcome IS NULL {_hf}"
                 ).fetchone()[0]
 
                 # Статистика по Value Bets
@@ -829,7 +924,7 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
                 recent = cursor.execute(f"""
                 SELECT {base_cols}{extra_cols}
                 FROM {table_name}
-                WHERE is_correct IS NOT NULL
+                WHERE is_correct IS NOT NULL AND (hidden IS NULL OR hidden = 0)
                 ORDER BY result_checked_at DESC
                 LIMIT 10
                 """).fetchall()
@@ -846,7 +941,7 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
                        {vb_expr} as vb_correct,
                        {roi_vb_expr} as roi_vb
                 FROM {table_name}
-                WHERE is_correct IS NOT NULL
+                WHERE is_correct IN (0, 1)
                 GROUP BY month
                 ORDER BY month DESC
                 LIMIT 6
@@ -856,6 +951,7 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
                     "total": total,
                     "total_checked": total_checked,
                     "correct": correct,
+                    "pending": true_pending,
                     "accuracy": (correct / total_checked * 100) if total_checked > 0 else 0,
                     "roi_main": round(roi_main_row, 2) if roi_main_row is not None else 0,
                     "vb_checked": vb_checked,
@@ -872,6 +968,95 @@ def get_statistics(sport: Optional[str] = None) -> Dict:
     _stats_cache[cache_key] = stats
     _stats_cache_ts[cache_key] = _stats_time.time()
     return stats
+
+
+def get_stavit_bets(sport: str = "football", limit: int = 30, offset: int = 0) -> list:
+    """Возвращает прогнозы где бот сказал СТАВИТЬ, с результатами."""
+    table = f"{sport}_predictions"
+    with _get_db_connection() as conn:
+        try:
+            # bookmaker_odds_draw есть только у футбола
+            _cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            _draw_col = "bookmaker_odds_draw," if "bookmaker_odds_draw" in _cols else "NULL as bookmaker_odds_draw,"
+            _lim = f"LIMIT {limit} OFFSET {offset}" if limit > 0 else ""
+            _stavit_filter = "(bet_signal LIKE 'СТАВИТЬ%' OR bet_signal LIKE '%СТАВИТЬ' AND bet_signal NOT LIKE 'НЕ СТАВИТЬ%')"
+            rows = conn.execute(f"""
+                SELECT home_team, away_team, recommended_outcome,
+                       bookmaker_odds_home, {_draw_col} bookmaker_odds_away,
+                       is_correct, NULL as real_home_score, NULL as real_away_score,
+                       roi_outcome, match_date, created_at
+                FROM {table}
+                WHERE {_stavit_filter}
+                ORDER BY created_at DESC
+                {_lim}
+            """).fetchall()
+            _hf2 = "AND (hidden IS NULL OR hidden = 0)"
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {_stavit_filter} {_hf2}"
+            ).fetchone()[0]
+            wins   = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {_stavit_filter} AND is_correct = 1 {_hf2}"
+            ).fetchone()[0]
+            losses = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {_stavit_filter} AND is_correct = 0 {_hf2}"
+            ).fetchone()[0]
+            roi_sum = conn.execute(
+                f"SELECT SUM(roi_outcome) FROM {table} WHERE {_stavit_filter} AND roi_outcome IS NOT NULL {_hf2}"
+            ).fetchone()[0] or 0.0
+            return {
+                "rows": [dict(r) for r in rows],
+                "total": total,
+                "wins": wins,
+                "losses": losses,
+                "pending": total - wins - losses,
+                "roi": round(roi_sum, 2),
+                "accuracy": round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0,
+            }
+        except Exception:
+            return {"rows": [], "total": 0, "wins": 0, "losses": 0, "pending": 0, "roi": 0, "accuracy": 0}
+
+
+def get_pending_stavit(limit: int = 20) -> list:
+    """Возвращает pending СТАВИТЬ прогнозы по всем видам спорта для ручного ввода результата."""
+    sports = ["football", "cs2", "tennis", "basketball"]
+    result = []
+    with _get_db_connection() as conn:
+        for sport in sports:
+            table = f"{sport}_predictions"
+            try:
+                rows = conn.execute(f"""
+                    SELECT match_id, home_team, away_team, recommended_outcome,
+                           match_date, created_at, '{sport}' as sport
+                    FROM {table}
+                    WHERE (bet_signal LIKE 'СТАВИТЬ%' OR (bet_signal LIKE '%СТАВИТЬ' AND bet_signal NOT LIKE 'НЕ СТАВИТЬ%')) AND is_correct IS NULL
+                      AND (real_outcome IS NULL OR real_outcome = '')
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (limit,)).fetchall()
+                result.extend([dict(r) for r in rows])
+            except Exception:
+                pass
+    result.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return result[:limit]
+
+
+def set_manual_result(sport: str, match_id: str, real_outcome: str, is_correct: int):
+    """Записывает результат вручную (без счёта)."""
+    update_result(
+        sport=sport,
+        match_id=match_id,
+        real_home_score=None,
+        real_away_score=None,
+        real_outcome=real_outcome,
+        is_correct=is_correct,
+    )
+    invalidate_stats_cache()
+
+
+def invalidate_stats_cache():
+    """Сбрасывает кеш статистики — следующий вызов пойдёт в БД."""
+    _stats_cache.clear()
+    _stats_cache_ts.clear()
 
 
 # ─── Личный кабинет пользователя ─────────────────────────────────────────────
@@ -893,7 +1078,7 @@ def upsert_user(user_id: int, username: str = "", first_name: str = ""):
 
 def track_analysis(user_id: int, sport: str):
     """Увеличивает счётчик анализов пользователя по виду спорта."""
-    col_map = {"football": "analyses_football", "cs2": "analyses_cs2", "tennis": "analyses_tennis", "basketball": "analyses_basketball"}
+    col_map = {"football": "analyses_football", "cs2": "analyses_cs2", "tennis": "analyses_tennis", "basketball": "analyses_basketball", "hockey": "analyses_hockey"}
     col = col_map.get(sport, "analyses_football")
     now = datetime.now(timezone.utc).isoformat()
     with _get_db_connection() as conn:
@@ -965,6 +1150,199 @@ def get_user_bankroll(user_id: int) -> Optional[float]:
     if profile:
         return profile.get("bankroll")
     return None
+
+
+# ─── Подписки ─────────────────────────────────────────────────────────────────
+
+def grant_subscription(user_id: int, days: int, sub_type: str = "full"):
+    """Выдаёт или продлевает подписку пользователю на N дней."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    with _get_db_connection() as conn:
+        row = conn.execute("SELECT subscription_until FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if row and row[0]:
+            try:
+                current = datetime.fromisoformat(row[0])
+                until = current + timedelta(days=days) if current > now else now + timedelta(days=days)
+            except Exception:
+                until = now + timedelta(days=days)
+        else:
+            until = now + timedelta(days=days)
+        conn.execute(
+            "UPDATE users SET subscription_until=?, subscription_type=? WHERE user_id=?",
+            (until.isoformat(), sub_type, user_id)
+        )
+        conn.commit()
+    _invalidate_user_cache(user_id)
+    return until
+
+
+def grant_trial(user_id: int) -> bool:
+    """Выдаёт 3-дневный пробный период. Возвращает False если уже использован."""
+    with _get_db_connection() as conn:
+        row = conn.execute("SELECT trial_used FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not row or row[0]:
+            return False
+        conn.execute("UPDATE users SET trial_used=1 WHERE user_id=?", (user_id,))
+        conn.commit()
+    grant_subscription(user_id, 3, sub_type="trial")
+    return True
+
+
+def revoke_subscription(user_id: int):
+    """Отзывает подписку пользователя."""
+    with _get_db_connection() as conn:
+        conn.execute("UPDATE users SET subscription_until=NULL WHERE user_id=?", (user_id,))
+        conn.commit()
+    _invalidate_user_cache(user_id)
+
+
+def get_subscription_status(user_id: int) -> dict:
+    """
+    Возвращает статус подписки пользователя.
+    {
+        "has_sub": bool,        # активная подписка
+        "sub_type": str,        # "free" | "trial" | "full"
+        "until": str | None,    # дата окончания ISO
+        "days_left": int,       # дней осталось
+        "trial_used": bool,     # использовал ли пробный
+        "weekly_used": int,     # анализов за неделю (free)
+        "weekly_left": int,     # осталось бесплатных (0-2)
+        "daily_used": int,      # анализов сегодня (trial)
+        "daily_left": int,      # осталось сегодня (0-4)
+    }
+    """
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    today = now.date().isoformat()
+    today_monday = (now.date() - _dt.timedelta(days=now.weekday())).isoformat()
+
+    with _get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT subscription_until, subscription_type, trial_used, "
+            "weekly_analyses_used, weekly_reset_date, "
+            "daily_analyses_used, daily_reset_date FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+
+    if not row:
+        return {"has_sub": False, "sub_type": "free", "until": None, "days_left": 0,
+                "trial_used": False, "weekly_used": 0, "weekly_left": 2,
+                "daily_used": 0, "daily_left": 4}
+
+    sub_until, sub_type, trial_used, weekly_used, weekly_reset, daily_used, daily_reset = row
+    sub_type = sub_type or "free"
+
+    # Сброс недельного счётчика (для бесплатных)
+    if weekly_reset != today_monday:
+        with _get_db_connection() as conn:
+            conn.execute(
+                "UPDATE users SET weekly_analyses_used=0, weekly_reset_date=? WHERE user_id=?",
+                (today_monday, user_id)
+            )
+            conn.commit()
+        weekly_used = 0
+
+    # Сброс дневного счётчика (для пробных)
+    if daily_reset != today:
+        with _get_db_connection() as conn:
+            conn.execute(
+                "UPDATE users SET daily_analyses_used=0, daily_reset_date=? WHERE user_id=?",
+                (today, user_id)
+            )
+            conn.commit()
+        daily_used = 0
+
+    has_sub = False
+    days_left = 0
+    if sub_until:
+        try:
+            until_dt = _dt.datetime.fromisoformat(sub_until)
+            if until_dt > now:
+                has_sub = True
+                days_left = (until_dt.date() - now.date()).days
+            else:
+                sub_type = "free"
+        except Exception:
+            pass
+
+    if not has_sub:
+        sub_type = "free"
+
+    return {
+        "has_sub": has_sub,
+        "sub_type": sub_type,
+        "until": sub_until,
+        "days_left": days_left,
+        "trial_used": bool(trial_used),
+        "weekly_used": weekly_used,
+        "weekly_left": max(0, 2 - weekly_used),
+        "daily_used": daily_used or 0,
+        "daily_left": max(0, 4 - (daily_used or 0)),
+    }
+
+
+def increment_weekly_analysis(user_id: int):
+    """Увеличивает счётчик бесплатных анализов за неделю."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    today_monday = (now.date() - _dt.timedelta(days=now.weekday())).isoformat()
+    with _get_db_connection() as conn:
+        conn.execute(
+            "UPDATE users SET weekly_analyses_used=weekly_analyses_used+1, weekly_reset_date=? WHERE user_id=?",
+            (today_monday, user_id)
+        )
+        conn.commit()
+
+
+def increment_daily_analysis(user_id: int):
+    """Увеличивает счётчик дневных анализов (для пробного тарифа)."""
+    import datetime as _dt
+    today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+    with _get_db_connection() as conn:
+        conn.execute(
+            "UPDATE users SET daily_analyses_used=daily_analyses_used+1, daily_reset_date=? WHERE user_id=?",
+            (today, user_id)
+        )
+        conn.commit()
+
+
+def get_users_list(limit: int = 30) -> list:
+    """Возвращает список пользователей с статусом подписки для /users команды."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with _get_db_connection() as conn:
+        rows = conn.execute("""
+            SELECT user_id, username, first_name, last_active,
+                   subscription_until, trial_used, analyses_total
+            FROM users
+            ORDER BY last_active DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+    result = []
+    for r in rows:
+        uid, uname, fname, last_active, sub_until, trial_used, total = r
+        has_sub = False
+        days_left = 0
+        if sub_until:
+            try:
+                until_dt = datetime.fromisoformat(sub_until)
+                if until_dt.isoformat() > now:
+                    has_sub = True
+                    from datetime import datetime as _dt
+                    days_left = (_dt.fromisoformat(sub_until).date() - _dt.fromisoformat(now).date()).days
+            except Exception:
+                pass
+        result.append({
+            "user_id": uid,
+            "username": uname or fname or str(uid),
+            "last_active": (last_active or "")[:10],
+            "has_sub": has_sub,
+            "days_left": days_left,
+            "trial_used": bool(trial_used),
+            "analyses_total": total or 0,
+        })
+    return result
 
 
 def log_action(user_id: int, action: str, username: str = ""):
@@ -1054,7 +1432,7 @@ def get_pl_stats(days: int = 30) -> dict:
     Возвращает: total, wins, losses, roi, profit_units, best_streak, current_streak
     """
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    tables = ["football_predictions", "cs2_predictions", "tennis_predictions", "basketball_predictions"]
+    tables = ["football_predictions", "cs2_predictions", "tennis_predictions", "basketball_predictions", "hockey_predictions"]
 
     all_bets = []
     with _get_db_connection() as conn:
@@ -1065,11 +1443,12 @@ def get_pl_stats(days: int = 30) -> dict:
                            bookmaker_odds_home, bookmaker_odds_away,
                            created_at
                     FROM {table}
-                    WHERE bet_signal = 'СТАВИТЬ'
+                    WHERE (bet_signal LIKE 'СТАВИТЬ%' OR (bet_signal LIKE '%СТАВИТЬ' AND bet_signal NOT LIKE 'НЕ СТАВИТЬ%'))
                       AND real_outcome IS NOT NULL
                       AND real_outcome != ''
                       AND real_outcome != 'expired'
                       AND created_at >= ?
+                      AND (hidden IS NULL OR hidden = 0)
                     ORDER BY created_at ASC
                 """, (cutoff,)).fetchall()
                 all_bets.extend(rows)
@@ -1143,6 +1522,7 @@ def get_unnotified_bets() -> list:
         "cs2": "cs2_predictions",
         "tennis": "tennis_predictions",
         "basketball": "basketball_predictions",
+        "hockey": "hockey_predictions",
     }
     result = []
     with _get_db_connection() as conn:
@@ -1178,6 +1558,45 @@ def mark_bet_notified(bet_id: int):
         conn.commit()
 
 
+def get_all_tier_stats() -> dict:
+    """
+    Возвращает статистику точности по тирам ставок по всем видам спорта.
+    Тиры: 'СТАВИТЬ 🔥🔥🔥', 'СТАВИТЬ 🔥🔥', 'СТАВИТЬ 🔥'
+    """
+    tables = [
+        "football_predictions", "cs2_predictions",
+        "tennis_predictions", "basketball_predictions", "hockey_predictions",
+    ]
+    tiers = ["СТАВИТЬ 🔥🔥🔥", "СТАВИТЬ 🔥🔥", "СТАВИТЬ 🔥"]
+    totals = {t: {"total": 0, "checked": 0, "wins": 0} for t in tiers}
+
+    with _get_db_connection() as conn:
+        for table in tables:
+            try:
+                _cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+                if "bet_signal" not in _cols:
+                    continue
+                for tier in tiers:
+                    row = conn.execute(
+                        f"SELECT COUNT(*), "
+                        f"SUM(CASE WHEN is_correct IS NOT NULL THEN 1 ELSE 0 END), "
+                        f"SUM(CASE WHEN is_correct=1 THEN 1 ELSE 0 END) "
+                        f"FROM {table} WHERE bet_signal=?", (tier,)
+                    ).fetchone()
+                    if row:
+                        totals[tier]["total"]   += row[0] or 0
+                        totals[tier]["checked"] += row[1] or 0
+                        totals[tier]["wins"]    += row[2] or 0
+            except Exception:
+                continue
+
+    result = {}
+    for tier, d in totals.items():
+        acc = round(d["wins"] / d["checked"] * 100, 1) if d["checked"] > 0 else None
+        result[tier] = {"total": d["total"], "checked": d["checked"], "wins": d["wins"], "acc": acc}
+    return result
+
+
 def get_recent_signal_streak() -> int:
     """
     Возвращает текущую серию проигрышей подряд среди сигналов СТАВИТЬ.
@@ -1190,8 +1609,10 @@ def get_recent_signal_streak() -> int:
             try:
                 rows = conn.execute(f"""
                     SELECT is_correct, created_at FROM {table}
-                    WHERE bet_signal='СТАВИТЬ' AND real_outcome IS NOT NULL
+                    WHERE (bet_signal LIKE 'СТАВИТЬ%' OR (bet_signal LIKE '%СТАВИТЬ' AND bet_signal NOT LIKE 'НЕ СТАВИТЬ%'))
+                      AND real_outcome IS NOT NULL
                       AND real_outcome NOT IN ('', 'expired') AND is_correct IS NOT NULL
+                      AND (hidden IS NULL OR hidden = 0)
                     ORDER BY created_at DESC LIMIT 10
                 """).fetchall()
                 all_results.extend(rows)
@@ -1214,12 +1635,15 @@ def get_chimera_signal_history(limit: int = 10) -> list:
     """
     История сигналов дня (match_id начинается с 'chimera_').
     Возвращает список dict: home, away, sport, is_correct, odds, created_at, real_outcome.
+    Баскетбольные пики с кэфом > 2.8 скрыты из публичной статистики (баг модели — данные
+    хранятся в БД для обучения, но не портят видимый процент пользователям).
     """
     tables = [
         ("football_predictions",   "football"),
         ("cs2_predictions",        "cs2"),
         ("tennis_predictions",     "tennis"),
         ("basketball_predictions", "basketball"),
+        ("hockey_predictions",     "hockey"),
     ]
     rows = []
     with _get_db_connection() as conn:
@@ -1227,12 +1651,23 @@ def get_chimera_signal_history(limit: int = 10) -> list:
             try:
                 cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
                 odds_col = ("bookmaker_odds_home" if "bookmaker_odds_home" in cols else "NULL")
+                # Баскетбол: скрываем старые пики с кэфом > 2.8 (баг данных Евролиги/NBA)
+                # Кэф хранится в home или away в зависимости от recommended_outcome
+                has_away_odds = "bookmaker_odds_away" in cols
+                if sport == "basketball" and has_away_odds:
+                    odds_filter = (
+                        "AND (COALESCE(bookmaker_odds_home, bookmaker_odds_away) IS NULL "
+                        "OR COALESCE(bookmaker_odds_home, bookmaker_odds_away) <= 2.8)"
+                    )
+                else:
+                    odds_filter = ""
                 res = conn.execute(f"""
                     SELECT home_team, away_team, is_correct,
                            {odds_col} as odds,
                            created_at, real_outcome, recommended_outcome
                     FROM {table}
                     WHERE match_id LIKE 'chimera_%'
+                    {odds_filter}
                     ORDER BY created_at DESC LIMIT {limit}
                 """).fetchall()
                 for r in res:
@@ -1250,6 +1685,36 @@ def get_chimera_signal_history(limit: int = 10) -> list:
                 continue
     rows.sort(key=lambda x: x["created_at"] or "", reverse=True)
     return rows[:limit]
+
+
+def reset_user_bets(user_id: int) -> int:
+    """Удаляет все личные ставки пользователя. Возвращает кол-во удалённых записей."""
+    with _get_db_connection() as conn:
+        cur = conn.execute("DELETE FROM user_bets WHERE user_id=?", (user_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+def reset_user_for_testing(user_id: int):
+    """Сбрасывает пользователя в состояние нового: лимиты, подписка, пробный период."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    today_monday = (now.date() - _dt.timedelta(days=now.weekday())).isoformat()
+    today = now.date().isoformat()
+    with _get_db_connection() as conn:
+        conn.execute("""
+            UPDATE users SET
+                subscription_until   = NULL,
+                subscription_type    = 'free',
+                trial_used           = 0,
+                weekly_analyses_used = 0,
+                weekly_reset_date    = ?,
+                daily_analyses_used  = 0,
+                daily_reset_date     = ?
+            WHERE user_id = ?
+        """, (today_monday, today, user_id))
+        conn.commit()
+    _invalidate_user_cache(user_id)
 
 
 def mark_user_bet(user_id: int, sport: str, prediction_id: int, odds: float = 0.0, units: int = 1):
@@ -1283,6 +1748,7 @@ def get_user_pl_stats(user_id: int, days: int = 30) -> dict:
         "cs2": "cs2_predictions",
         "tennis": "tennis_predictions",
         "basketball": "basketball_predictions",
+        "hockey": "hockey_predictions",
     }
 
     settled = []   # завершённые ставки

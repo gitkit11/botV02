@@ -10,10 +10,28 @@ express_builder.py — Построитель экспресс-ставок на
 """
 
 import os
+import time
 import logging
 import requests
 
 logger = logging.getLogger(__name__)
+
+# ── ELO рейтинги — загружаем один раз, обновляем не чаще раза в час ──────────
+_elo_cache: dict = {}
+_elo_cache_ts: float = 0.0
+_ELO_CACHE_TTL = 3600  # 1 час
+
+def _get_elo_ratings() -> dict:
+    global _elo_cache, _elo_cache_ts
+    if _elo_cache and (time.time() - _elo_cache_ts) < _ELO_CACHE_TTL:
+        return _elo_cache
+    try:
+        from math_model import load_elo_ratings
+        _elo_cache = load_elo_ratings()
+        _elo_cache_ts = time.time()
+    except Exception as e:
+        logger.warning(f"[Экспресс] Не удалось загрузить ELO: {e}")
+    return _elo_cache
 
 try:
     from config import THE_ODDS_API_KEY
@@ -101,8 +119,8 @@ def _elo_probs(home: str, away: str, sport: str) -> dict:
     """ELO-вероятности как дополнительный сигнал."""
     try:
         if sport == "football":
-            from math_model import load_elo_ratings, elo_win_probabilities
-            ratings = load_elo_ratings()
+            from math_model import elo_win_probabilities
+            ratings = _get_elo_ratings()  # из кеша, не с диска каждый раз
             p = elo_win_probabilities(home, away, ratings)
             return {"home": p.get("home", 0), "away": p.get("away", 0), "draw": p.get("draw", 0)}
         elif sport == "basketball":
@@ -173,20 +191,10 @@ def _scan_league(league: str, sport: str, league_name: str,
                  min_prob: float, min_ev: float) -> list:
     candidates = []
     try:
-        r = requests.get(
-            f"https://api.the-odds-api.com/v4/sports/{league}/odds/",
-            params={
-                "apiKey": THE_ODDS_API_KEY,
-                "regions": "eu",
-                "markets": "h2h,totals",
-                "oddsFormat": "decimal",
-            },
-            timeout=12,
-        )
-        if not r.ok:
-            logger.warning(f"[Экспресс] {league_name}: HTTP {r.status_code}")
+        from odds_cache import get_odds as _fetch_api_odds
+        matches = _fetch_api_odds(league, markets="h2h,totals")
+        if not matches:
             return []
-        matches = r.json()
         logger.info(f"[Экспресс] {league_name}: {len(matches)} матчей")
     except Exception as e:
         logger.warning(f"[Экспресс] {league_name}: {e}")
@@ -291,7 +299,12 @@ def _estimate_totals_prob(home: str, away: str, sport: str,
         if sport == "football":
             from math_model import calculate_expected_goals, poisson_match_probabilities
             xg = calculate_expected_goals(home, away)
-            result = poisson_match_probabilities(xg.get("home_xg", 1.3), xg.get("away_xg", 1.1))
+            if not xg:
+                raise ValueError("xG is None")
+            # calculate_expected_goals returns (home_xg, away_xg) tuple
+            xg_home = xg[0] if isinstance(xg, (tuple, list)) else xg.get("home_xg", 1.3)
+            xg_away = xg[1] if isinstance(xg, (tuple, list)) else xg.get("away_xg", 1.1)
+            result = poisson_match_probabilities(xg_home, xg_away)
             if line == 2.5:
                 return {"over": result.get("over_25", 0.5), "under": result.get("under_25", 0.5)}
             elif line == 1.5:

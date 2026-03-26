@@ -109,6 +109,104 @@ MAP_STATS: dict[str, dict[str, float]] = {
         "Mirage": 58.0, "Nuke": 60.0, "Inferno": 55.0, "Ancient": 58.0,
         "Anubis": 55.0, "Vertigo": 52.0, "Dust2": 55.0,
     },
+    # ── Tier-2 (известные) ──────────────────────────────────────────────────
+    "1WIN": {
+        "Mirage": 56.0, "Nuke": 54.0, "Inferno": 58.0, "Ancient": 52.0,
+        "Anubis": 55.0, "Vertigo": 50.0, "Dust2": 54.0,
+    },
+    "Nemiga": {
+        "Mirage": 54.0, "Nuke": 52.0, "Inferno": 56.0, "Ancient": 50.0,
+        "Anubis": 53.0, "Vertigo": 52.0, "Dust2": 55.0,
+    },
+    "ODDIK": {
+        "Mirage": 58.0, "Nuke": 52.0, "Inferno": 62.0, "Ancient": 55.0,
+        "Anubis": 54.0, "Vertigo": 50.0, "Dust2": 56.0,
+    },
+    "Galorys": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 55.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 52.0,
+    },
+    "Rooster": {
+        "Mirage": 52.0, "Nuke": 50.0, "Inferno": 52.0, "Ancient": 50.0,
+        "Anubis": 50.0, "Vertigo": 50.0, "Dust2": 52.0,
+    },
+    "5star": {
+        "Mirage": 52.0, "Nuke": 50.0, "Inferno": 54.0, "Ancient": 50.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 52.0,
+    },
+    "Mindfreak": {
+        "Mirage": 50.0, "Nuke": 50.0, "Inferno": 52.0, "Ancient": 50.0,
+        "Anubis": 50.0, "Vertigo": 50.0, "Dust2": 50.0,
+    },
+    "Mousquetaires": {
+        "Mirage": 52.0, "Nuke": 50.0, "Inferno": 52.0, "Ancient": 50.0,
+        "Anubis": 50.0, "Vertigo": 50.0, "Dust2": 50.0,
+    },
+    # ── Tier-3 / Regional (дефолтные значения) ──────────────────────────────
+    "OverKnight": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Mythic": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "LAG Gaming": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Wanted Goons": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "EC BANGA": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "MARKnLARRY": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Arcade Esports": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "japczany": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Basement Bobs": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Just Swing": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Ursa": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Team Nemesis": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "ex-Zero Tenacity": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "MASONIC": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "Omega": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
+    "MANA eSports": {
+        "Mirage": 50.0, "Nuke": 48.0, "Inferno": 50.0, "Ancient": 48.0,
+        "Anubis": 50.0, "Vertigo": 48.0, "Dust2": 50.0,
+    },
 }
 
 # Рейтинги игроков (HLTV Rating 2.0, приблизительно за 2024-2025)
@@ -252,6 +350,49 @@ PLAYER_STATS: dict[str, list[dict]] = {
         {"name": "Djoko",    "rating": 1.08},
         {"name": "lucky",    "rating": 1.12},
         {"name": "maka",     "rating": 1.05},
+    ],
+    # ── Tier-2 ──────────────────────────────────────────────────────────────
+    "1WIN": [
+        {"name": "s1ren",   "rating": 1.12},
+        {"name": "zorte",   "rating": 1.10},
+        {"name": "Krad",    "rating": 1.08},
+        {"name": "hades",   "rating": 1.05},
+        {"name": "S1mon",   "rating": 1.02},
+    ],
+    "Nemiga": [
+        {"name": "Neityu",  "rating": 1.10},
+        {"name": "boX",     "rating": 1.08},
+        {"name": "ssb",     "rating": 1.06},
+        {"name": "jR",      "rating": 1.05},
+        {"name": "Forester","rating": 1.04},
+    ],
+    "ODDIK": [
+        {"name": "togs",    "rating": 1.14},
+        {"name": "ksloks",  "rating": 1.12},
+        {"name": "skullz",  "rating": 1.10},
+        {"name": "card",    "rating": 1.08},
+        {"name": "ALLE",    "rating": 1.05},
+    ],
+    "Galorys": [
+        {"name": "koala",   "rating": 1.06},
+        {"name": "venomzera","rating": 1.05},
+        {"name": "gbb",     "rating": 1.04},
+        {"name": "nython",  "rating": 1.03},
+        {"name": "dok",     "rating": 1.02},
+    ],
+    "Rooster": [
+        {"name": "vision",  "rating": 1.05},
+        {"name": "asap",    "rating": 1.04},
+        {"name": "dexter",  "rating": 1.03},
+        {"name": "Sterling","rating": 1.02},
+        {"name": "Texta",   "rating": 1.01},
+    ],
+    "Eternal Fire": [
+        {"name": "xfl0ud",  "rating": 1.18},
+        {"name": "woxic",   "rating": 1.15},
+        {"name": "Calyx",   "rating": 1.12},
+        {"name": "XANTARES","rating": 1.20},
+        {"name": "Wicadia", "rating": 1.05},
     ],
 }
 

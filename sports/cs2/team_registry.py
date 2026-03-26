@@ -69,6 +69,32 @@ CS2_ELO: dict[str, int] = {
     "Spirit Academy":           1200,
     "aTTaX":                    1190,
     "HEET":                     1180,
+    # ── Tier-2 (известные, ранее отсутствовали) ──────────────────────────────
+    "1WIN":                     1460,
+    "Nemiga":                   1420,
+    "ODDIK":                    1480,
+    "Galorys":                  1320,
+    "Rooster":                  1300,
+    "5star":                    1310,
+    "Mindfreak":                1280,
+    "Mousquetaires":            1290,
+    # ── Tier-3 / Regional ────────────────────────────────────────────────────
+    "OverKnight":               1150,
+    "Mythic":                   1160,
+    "LAG Gaming":               1140,
+    "Wanted Goons":             1130,
+    "EC BANGA":                 1120,
+    "MARKnLARRY":               1110,
+    "Arcade Esports":           1130,
+    "japczany":                 1100,
+    "Basement Bobs":            1110,
+    "Just Swing":               1120,
+    "Ursa":                     1130,
+    "Team Nemesis":             1150,
+    "ex-Zero Tenacity":         1140,
+    "MASONIC":                  1160,
+    "Omega":                    1150,
+    "MANA eSports":             1140,
 }
 
 # Дефолт для неизвестных команд — tier-3 уровень

@@ -13,6 +13,12 @@ PANDASCORE_BASE = "https://api.pandascore.co/csgo"
 
 # Рабочий кэш — изначально заполнен из team_registry, пополняется при API-запросах
 _team_cache: dict[str, int] = dict(PANDASCORE_IDS)
+# Negative cache — команды которые не найдены, чтобы не повторять запросы
+_team_not_found: set = set()
+
+# Кеш результатов get_team_stats() — один вызов на команду за весь скан
+_team_stats_cache: dict = {}   # team_name → (ts, stats_dict)
+_TEAM_STATS_TTL = 3600         # 1 час — статистика команды не меняется за час
 
 # _TEAM_REBRANDS — алиас для обратной совместимости; данные в team_registry.TEAM_ALIASES
 _TEAM_REBRANDS = TEAM_ALIASES
@@ -45,6 +51,10 @@ def _resolve_team_alias(team_name: str) -> str:
 
 def get_team_id(team_name):
     """Ищет ID команды по имени. Кэширует результат. Поддерживает fuzzy matching."""
+    # Negative cache — не повторяем запросы для команд которые точно не найдены
+    if team_name in _team_not_found:
+        return None
+
     # Проверяем кэш напрямую
     if team_name in _team_cache:
         return _team_cache[team_name]
@@ -53,6 +63,14 @@ def get_team_id(team_name):
     resolved = _resolve_team_alias(team_name)
     if resolved != team_name and resolved in _team_cache:
         _team_cache[team_name] = _team_cache[resolved]
+        return _team_cache[team_name]
+
+    # 3. Fuzzy matching по известным именам в кэше (быстро, без API)
+    known_names = [k for k, v in _team_cache.items() if isinstance(v, int)]
+    close = get_close_matches(team_name, known_names, n=1, cutoff=0.80)
+    if close:
+        print(f"[PandaScore] Fuzzy match: '{team_name}' → '{close[0]}'")
+        _team_cache[team_name] = _team_cache[close[0]]
         return _team_cache[team_name]
 
     # 1. Поиск по точному имени (filter[name])
@@ -75,22 +93,20 @@ def get_team_id(team_name):
             _team_cache[team_name] = teams[0]["id"]
             return teams[0]["id"]
 
-    # 3. Fuzzy matching по известным именам в кэше (cutoff 0.80 = 80% сходства)
-    known_names = [k for k, v in _team_cache.items() if isinstance(v, int)]
-    close = get_close_matches(team_name, known_names, n=1, cutoff=0.80)
-    if close:
-        print(f"[PandaScore] Fuzzy match: '{team_name}' → '{close[0]}'")
-        _team_cache[team_name] = _team_cache[close[0]]
-        return _team_cache[team_name]
-
+    # Не нашли — запоминаем чтобы не повторять
+    _team_not_found.add(team_name)
     return None
 
 def get_team_stats(team_name, last_n=20):
     """
-    Получает реальную статистику команды из истории матчей.
+    Получает реальную статистику команды из истории матчей (с кешем 1 час).
     Возвращает: winrate, wins, losses, last_5_form
-    Бесплатный тариф: только победы/поражения в матчах (без статистики карт).
     """
+    # Кеш — не запрашиваем одну команду больше раза за час
+    cached = _team_stats_cache.get(team_name)
+    if cached and (time.time() - cached[0]) < _TEAM_STATS_TTL:
+        return cached[1]
+
     team_id = get_team_id(team_name)
     if not team_id:
         return {"winrate": 0.5, "wins": 0, "losses": 0, "form": "?????", "matches": 0}
@@ -122,13 +138,15 @@ def get_team_stats(team_name, last_n=20):
     winrate = wins / total if total > 0 else 0.5
     form = "".join(form_chars[-5:]) if form_chars else "?????"
 
-    return {
+    result = {
         "winrate": round(winrate, 3),
         "wins": wins,
         "losses": losses,
         "form": form,
         "matches": total
     }
+    _team_stats_cache[team_name] = (time.time(), result)
+    return result
 
 def get_team_map_winrates(team_name: str, last_n: int = 30) -> dict:
     """

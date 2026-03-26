@@ -254,14 +254,14 @@ def format_ml_block(pred: dict, home_team: str, away_team: str) -> str:
         scores_str = "  ".join(f"{s}({p}%)" for s, p in pred["top_scores"][:3])
         lines.append(f"   🎯 Топ счета: {scores_str}")
 
-    # Value bets
-    for outcome, data in pred.get("ev", {}).items():
-        if data["ev"] >= 5.0:
-            name = {"home_win": home_team, "draw": "Ничья", "away_win": away_team}.get(outcome, outcome)
-            lines.append(f"   💎 Value: <b>{name}</b> @ {data['odds']} | EV <b>{data['ev']:+.1f}%</b>")
-
-    # Предупреждение если команда неизвестна
-    if not pred.get("home_known") or not pred.get("away_known"):
-        lines.append(f"   <i>⚠️ Нет истории — среднестатистический прогноз</i>")
+    # Value bets — только если обе команды известны модели и EV реалистичный
+    both_known = pred.get("home_known") and pred.get("away_known")
+    if both_known:
+        for outcome, data in pred.get("ev", {}).items():
+            if 5.0 <= data["ev"] <= 20.0:  # >20% — скорее всего артефакт, скрываем
+                name = {"home_win": home_team, "draw": "Ничья", "away_win": away_team}.get(outcome, outcome)
+                lines.append(f"   💎 Value: <b>{name}</b> @ {data['odds']} | EV <b>{data['ev']:+.1f}%</b>")
+    else:
+        lines.append(f"   <i>⚠️ Нет истории для одной из команд — прогноз приблизительный</i>")
 
     return "\n".join(lines)

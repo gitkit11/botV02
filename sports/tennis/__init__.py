@@ -139,10 +139,20 @@ def scan_tennis_signals() -> list:
                 bm_total_over=m.get("bm_total_over", 0.0),
                 bm_total_under=m.get("bm_total_under", 0.0),
             )
-            # Добавляем время матча и тоталы в каждый кандидат
+            # ML фильтр: если модель доступна и не рекомендует — пропускаем матч
+            ml_bet    = probs.get("ml_bet", False)
+            ml_result = probs.get("ml_result")
+            if probs.get("ml_available") and not ml_bet:
+                # ML модель говорит prob < 0.72 — недостаточно уверенности
+                continue
+
+            # Добавляем время матча, тоталы и ML данные в каждый кандидат
             for c in candidates:
                 c["commence_time"] = m.get("commence_time", "")
                 c["game_totals"]   = game_totals
+                c["ml_bet"]        = ml_bet
+                c["ml_prob"]       = ml_result.get("prob_pct") if ml_result else None
+                c["ml_label"]      = ml_result.get("label", "") if ml_result else ""
             all_candidates.extend(candidates)
         except Exception as e:
             import logging

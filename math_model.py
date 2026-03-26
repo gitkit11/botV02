@@ -78,27 +78,26 @@ def load_team_form() -> dict:
 
 def get_form_bonus(team: str, form_data: dict) -> float:
     """
-    Считает бонус/штраф к ELO на основе формы последних 5 матчей.
-    W=+8, D=0, L=-8 (максимум ±40 очков).
-    Последние матчи важнее (веса 0.6 → 1.4).
+    Считает бонус/штраф к ELO на основе формы последних 10 матчей.
+    W=+6, D=0, L=-6. Последние матчи важнее (веса 0.4 → 1.3).
     """
     results = form_data.get(team, [])
     if not results:
         return 0.0
-    last5 = results[-5:]
-    weights = [0.6, 0.8, 1.0, 1.2, 1.4]
+    last10 = results[-10:]
+    n = len(last10)
     bonus = 0.0
-    for i, res in enumerate(last5):
-        w = weights[i] if i < len(weights) else 1.0
+    for i, res in enumerate(last10):
+        w = 0.4 + (0.9 * i / max(n - 1, 1))
         if res == 'W':
-            bonus += 8 * w
+            bonus += 6 * w
         elif res == 'L':
-            bonus -= 8 * w
+            bonus -= 6 * w
     return round(bonus, 1)
 
 
 def get_form_string(team: str, form_data: dict) -> str:
-    """Возвращает строку формы последних 5 матчей, например 'WWDLW'."""
+    """Возвращает строку формы последних 5 матчей для отображения."""
     results = form_data.get(team, [])
     return ''.join(results[-5:]) if results else '?????'
 

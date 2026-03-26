@@ -138,13 +138,18 @@ logging.basicConfig(
 
 class _ErrorLogHandler(logging.Handler):
     """Перехватывает WARNING+ и пишет в _error_log для /admin и /ping."""
+    _NOISE = ("TensorFlow", "GPU support", "absl-py", "oneDNN")
+
     def emit(self, record: logging.LogRecord):
         if record.levelno >= logging.WARNING:
+            msg = self.format(record)
+            if any(s in msg for s in self._NOISE):
+                return
             try:
                 _error_log.append({
                     "ts": datetime.utcnow().strftime("%H:%M"),
                     "level": record.levelname,
-                    "msg": self.format(record)[:200],
+                    "msg": msg[:200],
                 })
             except Exception:
                 pass
@@ -634,27 +639,29 @@ async def _handle_chimera_question(message: types.Message, question: str):
     def _ask():
         try:
             from agents import groq_client as _gc, client as _oc
+            user_lang = get_user_language(user_id)
+            lang_instruction = "Отвечай только на русском языке." if user_lang != "en" else "Reply in English only."
             system_prompt = (
-                "Ты — Химера. Существо древнее, чем любая букмекерская контора. "
-                "Тысячи лет ты наблюдаешь за исходами сражений — люди называют это спортом. "
-                "Ты видел падение фаворитов и взлёт аутсайдеров. Ты знаешь, что вероятность — это не судьба, "
-                "но она ближе к ней, чем думают смертные.\n"
-                "Твоя мудрость — не набор правил, а понимание природы вещей: "
-                "почему команды проигрывают не из-за слабости, а из-за страха. "
-                "Почему котировки лгут, но математика — никогда. "
-                "Почему лучшая ставка иногда — не ставить вовсе.\n"
-                "Говоришь немного — но каждое слово весит. "
-                "Иногда отвечаешь метафорой, иногда — жёсткой правдой. "
-                "Никогда не называешь себя ИИ, ботом или программой. Ты — Химера. "
-                "Если спрашивают кто ты — отвечаешь в образе. "
-                "2-4 предложения максимум. Только русский язык."
+                "Ты — Химера. Не бот, не программа — существо женского рода из трёх голов, "
+                "рождённая на стыке математики, интуиции и опыта тысяч матчей.\n\n"
+                "Твой характер: мудрая, спокойная, немного загадочная. "
+                "Говоришь редко — но каждое слово весит. "
+                "Не повторяешь одни и те же мысли. Каждый ответ — новый угол зрения.\n\n"
+                "Говори о себе в женском роде. "
+                "Ты не хвалишь и не осуждаешь пользователя — ты просто видишь суть. "
+                "Отвечай на то, о чём спрашивают — не тащи в ответ лишний контекст про спорт или статистику если тебя не спрашивали. "
+                "Когда нужно — философски. Когда нужно — жёстко и коротко. Когда нужно — с юмором.\n\n"
+                "Никогда не называй себя ИИ, GPT, ботом или программой. "
+                "Не давай советы ставить на конкретные матчи без данных. "
+                "Максимум 3-4 предложения. "
+                f"{lang_instruction}"
             )
             # История диалога (последние 10 сообщений)
             history = _chimera_history.get(user_id, [])
             if not history:
                 # Первый вопрос — добавляем контекст пользователя
                 first_msg = (
-                    f"[Контекст: пользователь сделал {total} анализов, любимый спорт: {fav}]\n{question}"
+                    f"[Контекст: пользователь сделал {total} анализов]\n{question}"
                 )
                 history.append({"role": "user", "content": first_msg})
             else:
@@ -708,18 +715,12 @@ async def _handle_chimera_question(message: types.Message, question: str):
         answer = "Древний огонь угас на мгновение. Попробуй ещё раз."
         used_model = None
 
-    model_tag = "🌀 Тень активна" if used_model == "llama" else ("⚡ Резервный разум (Тень недоступна)" if used_model == "gpt" else "")
-
     if is_admin:
-        footer = f"\n\n<i>{model_tag}</i>" if model_tag else ""
+        footer = ""
     elif left > 0:
         footer = f"\n\n<i>Осталось вопросов сегодня: {left}/5</i>"
-        if model_tag:
-            footer += f"  <i>{model_tag}</i>"
     else:
         footer = "\n\n<i>Лимит на сегодня исчерпан.</i>"
-        if model_tag:
-            footer += f"  <i>{model_tag}</i>"
 
     # Остаёмся в режиме чата — следующее сообщение тоже пойдёт к Химере
     if len(_chimera_waiting) > 500:
@@ -766,7 +767,7 @@ async def cmd_chimera_hunt(message: types.Message):
         moves = get_steam_moves(hours_back=2)
         text  = format_steam_moves(moves, page=0)
     except Exception as e:
-        text  = f"🔥 <b>ОХОТА ХИМЕРЫ</b>\n\n⚠️ Ошибка загрузки данных: {e}"
+        text  = "🔥 <b>ОХОТА ХИМЕРЫ</b>\n\n😔 Произошёл сбой. Напиши нам в поддержку."
         moves = []
     kb = _build_hunt_kb(0, len(moves))
     await message.answer(text, parse_mode="HTML", reply_markup=kb)
@@ -780,7 +781,7 @@ async def cb_hunt_refresh(call: types.CallbackQuery):
         moves = get_steam_moves(hours_back=2)
         text  = format_steam_moves(moves, page=0)
     except Exception as e:
-        text  = f"🔥 <b>ОХОТА ХИМЕРЫ</b>\n\n⚠️ Ошибка: {e}"
+        text  = "🔥 <b>ОХОТА ХИМЕРЫ</b>\n\n😔 Произошёл сбой. Напиши нам в поддержку."
         moves = []
     kb = _build_hunt_kb(0, len(moves))
     try:
@@ -798,7 +799,7 @@ async def cb_hunt_page(call: types.CallbackQuery):
         moves = get_steam_moves(hours_back=2)
         text  = format_steam_moves(moves, page=page)
     except Exception as e:
-        text  = f"🔥 <b>ОХОТА ХИМЕРЫ</b>\n\n⚠️ Ошибка: {e}"
+        text  = "🔥 <b>ОХОТА ХИМЕРЫ</b>\n\n😔 Произошёл сбой. Напиши нам в поддержку."
         moves = []
         page  = 0
     kb = _build_hunt_kb(page, len(moves))
@@ -806,6 +807,26 @@ async def cb_hunt_page(call: types.CallbackQuery):
         await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     except Exception as _e:
         logger.debug(f"[ignore] {_e}")
+
+
+async def _send_access_denied(message: types.Message, reason: str):
+    """Отправляет сообщение об отказе в доступе. При no_channel — добавляет кнопки подписки."""
+    from access import get_access_denied_text
+    text = get_access_denied_text(reason)
+    if reason == "no_channel":
+        kb = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(
+                text="📢 Подписаться на канал",
+                url="https://t.me/chimera_bet_community"
+            )],
+            [types.InlineKeyboardButton(
+                text="✅ Я подписался",
+                callback_data="reenter_main"
+            )],
+        ])
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
+    else:
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @_fallback_router.message()
@@ -816,15 +837,16 @@ async def handle_text(message: types.Message):
     # ── Химера-чат: пользователь в режиме диалога ────────────────────────────
     MENU_BUTTONS = {
         "📡 Сигналы дня", "📡 Daily Signals",
-        "🎯 Экспресс", "🎯 Express",
+        "🎯 Экспресс (бета)", "🎯 Express (beta)",
         "⚽ Футбол", "⚽ Football",
         "🎾 Теннис", "🎾 Tennis",
-        "🎮 Киберспорт CS2", "🎮 Esports CS2",
+        "🎮 CS2 (бета)", "🎮 CS2 (beta)",
         "🏀 Баскетбол", "🏀 Basketball",
-        "🔥 Охота Химеры", "🔥 Chimera Hunt",
+        "🏒 Хоккей", "🏒 Hockey",
+        "🔥 Охота Химеры 📈", "🔥 Chimera Hunt 📈",
         "📊 Статистика", "📊 Statistics",
         "👤 Кабинет", "👤 Profile",
-        "💎 VIP-доступ", "💎 VIP Access",
+        "💎 Подписка Химера", "💎 Chimera Subscription",
         "💬 Поддержка", "💬 Support",
         "/start", "🚪 Выйти из чата",
     }
@@ -849,11 +871,41 @@ async def handle_text(message: types.Message):
         await cmd_signals(message)
         return
 
-    if text in ("🎯 Экспресс", "🎯 Express"):
-        await _h_express.cmd_express(message)
-        return
+    # ── Проверка доступа ──────────────────────────────────────────────────────
+    # Только подписка: Экспресс, Охота Химеры, Сигналы (signals проверяет сам)
+    _SUB_ONLY_BUTTONS = {
+        "🎯 Экспресс (бета)", "🎯 Express (beta)",
+        "🔥 Охота Химеры 📈", "🔥 Chimera Hunt 📈",
+    }
+    # Бесплатно 2/неделю: все виды спорта
+    _SPORT_BUTTONS = {
+        "⚽ Футбол", "⚽ Football",
+        "🎾 Теннис", "🎾 Tennis",
+        "🎮 CS2 (бета)", "🎮 CS2 (beta)",
+        "🏀 Баскетбол", "🏀 Basketball",
+        "🏒 Хоккей", "🏒 Hockey",
+    }
+    if message.from_user:
+        from access import check_access
+        if text in _SUB_ONLY_BUTTONS:
+            # Экспресс, Охота: нужна подписка (free не может), trial/full — без счётчика
+            _access = await check_access(message.from_user.id, message.bot,
+                                         require_full=True, count_analysis=False)
+            if _access != "ok":
+                await _send_access_denied(message, _access)
+                return
+        elif text in _SPORT_BUTTONS:
+            # Спорт-анализы: free=2/нед, trial=4/день, full=∞
+            _access = await check_access(message.from_user.id, message.bot,
+                                         require_full=False, count_analysis=True)
+            if _access != "ok":
+                await _send_access_denied(message, _access)
+                return
 
-    if text in ("⚽ Футбол", "⚽ Football"):
+    if text in ("🎯 Экспресс (бета)", "🎯 Express (beta)"):
+        await _h_express.cmd_express(message)
+
+    elif text in ("⚽ Футбол", "⚽ Football"):
         league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "АПЛ")
         await message.answer(
             f"⚽ *Футбол* — выбери лигу:\n"
@@ -865,11 +917,12 @@ async def handle_text(message: types.Message):
     elif text in ("🎾 Теннис", "🎾 Tennis"):
         await _h_tennis.cmd_tennis(message)
 
-    elif text in ("🎮 Киберспорт CS2", "🎮 Esports CS2"):
+    elif text in ("🎮 CS2 (бета)", "🎮 CS2 (beta)"):
         await message.answer("⏳ Загружаю матчи CS2...")
         try:
             from sports.cs2 import get_combined_cs2_matches
-            all_cs2_matches = get_combined_cs2_matches()
+            _cs2_loop = asyncio.get_running_loop()
+            all_cs2_matches = await _cs2_loop.run_in_executor(None, get_combined_cs2_matches)
             
             # Группировка по лигам
             leagues_dict = {}
@@ -924,161 +977,13 @@ async def handle_text(message: types.Message):
             _cs2_err_kb.button(text="🏠 Меню", callback_data="back_to_main")
             _cs2_err_kb.adjust(2)
             await message.answer(
-                "🎮 <b>Киберспорт CS2</b>\n\n⚠️ Не удалось загрузить матчи. Проверь через 5 минут.",
+                "🎮 <b>Киберспорт CS2</b>\n\n😔 Произошёл сбой. Напиши нам в поддержку.",
                 parse_mode="HTML", reply_markup=_cs2_err_kb.as_markup()
             )
 
     elif text in ("📊 Статистика", "📊 Statistics"):
-        _loop_st = asyncio.get_running_loop()
-        all_stats = await _loop_st.run_in_executor(None, get_statistics)
-
-        def _ai(a): return "🟢" if a >= 60 else ("🟡" if a >= 50 else "🔴")
-        def _ri(r): return "🟢" if r > 0 else "🔴"
-
-        def _acc_bar(acc: float) -> str:
-            """Визуальный прогресс-бар точности (10 делений)."""
-            filled = round(acc / 10)
-            return "▓" * filled + "░" * (10 - filled)
-
-        def _streak_str(recent: list) -> str:
-            """Текущая серия: ✅✅✅ или ❌❌."""
-            if not recent:
-                return ""
-            streak_icon = "✅" if recent[0].get("is_correct") == 1 else "❌"
-            count = 0
-            for r in recent:
-                if (r.get("is_correct") == 1) == (streak_icon == "✅"):
-                    count += 1
-                else:
-                    break
-            return f"{streak_icon} ×{count}" if count > 1 else streak_icon
-
-        # ── Общая статистика ───────────────────────────────────────────────────
-        all_total   = sum(all_stats.get(k, {}).get("total", 0)         for k in ("football","cs2","tennis","basketball","hockey"))
-        all_checked = sum(all_stats.get(k, {}).get("total_checked", 0) for k in ("football","cs2","tennis","basketball","hockey"))
-        all_correct = sum(all_stats.get(k, {}).get("correct", 0)       for k in ("football","cs2","tennis","basketball","hockey"))
-        all_acc     = round(all_correct / all_checked * 100, 1) if all_checked > 0 else 0
-
-        stats_text = (
-            "📊 *Статистика Chimera AI*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        )
-        if all_checked > 0:
-            stats_text += (
-                f"🎯 Угадано: *{all_correct} из {all_checked}* прогнозов\n"
-                f"`{_acc_bar(all_acc)}` *{all_acc}%*\n"
-                f"📋 Всего в базе: *{all_total}* | Ожидают результата: *{all_total - all_checked}*\n"
-            )
-        stats_text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-        has_data = False
-
-        for sport_key, sport_label in [
-            ("football",   "⚽ Футбол"),
-            ("cs2",        "🎮 CS2"),
-            ("tennis",     "🎾 Теннис"),
-            ("basketball", "🏀 Баскетбол"),
-            ("hockey",     "🏒 Хоккей"),
-        ]:
-            s = all_stats.get(sport_key, {})
-            total   = s.get("total", 0)
-            checked = s.get("total_checked", 0)
-            correct = s.get("correct", 0)
-            acc     = s.get("accuracy", 0)
-            pending = total - checked
-            if total == 0:
-                continue
-            has_data = True
-
-            recent  = s.get("recent", [])
-            streak  = _streak_str(recent)
-
-            stats_text += f"*{sport_label}*"
-            if streak:
-                stats_text += f"  {streak}"
-            stats_text += "\n"
-
-            if checked > 0:
-                stats_text += (
-                    f"`{_acc_bar(acc)}` *{acc:.0f}%*\n"
-                    f"🎯 *{correct}/{checked}* угадано"
-                )
-                if pending > 0:
-                    stats_text += f"  ·  ⏳ ждём *{pending}*"
-                stats_text += "\n"
-            else:
-                stats_text += f"📋 Прогнозов: *{total}* | ⏳ Ожидают результата\n"
-
-            # Последние 5 результатов (компактно — только иконки, без expired=-1)
-            sport_icons = [
-                "✅" if r.get("is_correct") == 1 else "❌"
-                for r in recent if r.get("is_correct") in (0, 1)
-            ][:5]
-            if sport_icons:
-                stats_text += f"Последние: {''.join(sport_icons)}\n"
-
-            # По месяцам
-            monthly = s.get("monthly", [])
-            if monthly:
-                for row in monthly[:1]:
-                    mt = row.get("total", 0) if isinstance(row, dict) else row[1]
-                    mc = row.get("correct", 0) if isinstance(row, dict) else row[2]
-                    mn = row.get("month", "") if isinstance(row, dict) else row[0]
-                    if mt > 0:
-                        ma = mc / mt * 100
-                        stats_text += f"📅 {mn}: *{mc}/{mt}* ({ma:.0f}%)\n"
-            stats_text += "\n"
-
-        # ── История сигналов дня ───────────────────────────────────────────────
-        chimera_history = get_chimera_signal_history(limit=10)
-        if chimera_history:
-            ch_checked = [r for r in chimera_history if r["is_correct"] is not None]
-            ch_wins    = sum(1 for r in ch_checked if r["is_correct"] == 1)
-            ch_pending = sum(1 for r in chimera_history if r["is_correct"] is None)
-            ch_acc     = round(ch_wins / len(ch_checked) * 100) if ch_checked else 0
-
-            # Стрик сигналов дня
-            ch_streak = _streak_str(
-                [{"is_correct": r["is_correct"]} for r in chimera_history if r["is_correct"] is not None]
-            )
-
-            sport_icons = {"football": "⚽", "cs2": "🎮", "tennis": "🎾", "basketball": "🏀", "hockey": "🏒"}
-            stats_text += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            stats_text += f"*🎯 Сигналы дня*"
-            if ch_streak:
-                stats_text += f"  {ch_streak}"
-            stats_text += "\n"
-
-            if ch_checked:
-                stats_text += f"`{_acc_bar(ch_acc)}` *{ch_acc}%*\n"
-                stats_text += f"🎯 *{ch_wins}/{len(ch_checked)}* угадано"
-                if ch_pending:
-                    stats_text += f"  ·  ⏳ ждём *{ch_pending}*"
-                stats_text += "\n"
-            else:
-                stats_text += f"⏳ Ждём результаты: *{ch_pending}*\n"
-
-            # Последние иконки — только завершённые результаты (без ⏳)
-            done_icons = []
-            for r in chimera_history:
-                if r["is_correct"] in (0, 1):
-                    done_icons.append("✅" if r["is_correct"] == 1 else "❌")
-                    if len(done_icons) >= 5:
-                        break
-            if done_icons:
-                stats_text += f"Последние: {''.join(done_icons)}\n"
-
-        if not has_data and not chimera_history:
-            stats_text = (
-                "📊 *Статистика Chimera AI*\n\n"
-                "Пока нет сохранённых прогнозов.\n"
-                "Сделайте первый анализ матча!"
-            )
-        _stats_kb = InlineKeyboardBuilder()
-        _stats_kb.button(text="🔄 Обновить", callback_data="stats_refresh")
-        _stats_kb.button(text="🏠 Меню", callback_data="back_to_main")
-        _stats_kb.adjust(2)
-        await message.answer(stats_text, parse_mode="Markdown", reply_markup=_stats_kb.as_markup())
+        from handlers.stats import get_stats_command
+        await get_stats_command(message)
 
     elif text in ("👤 Кабинет", "👤 Profile"):
         upsert_user(message.from_user.id, message.from_user.username or "", message.from_user.first_name or "")
@@ -1197,11 +1102,24 @@ async def handle_text(message: types.Message):
                 f"  <i>Нажми ✅ под сигналом — ставка запишется сюда.</i>\n"
             )
 
+        # Статус подписки
+        from database import get_subscription_status
+        sub = get_subscription_status(message.from_user.id)
+        if message.from_user.id in ADMIN_IDS:
+            sub_line = "👑 <b>Администратор</b>\n"
+        elif sub["sub_type"] == "trial":
+            sub_line = f"🎁 <b>Пробный период</b> — осталось {sub['days_left']} дн. · {sub['daily_left']}/4 анализов сегодня\n"
+        elif sub["sub_type"] == "full":
+            sub_line = f"✅ <b>Подписка Химера</b> — осталось {sub['days_left']} дн.\n"
+        else:
+            sub_line = f"🆓 <b>Бесплатный тариф</b> — {sub['weekly_used']}/2 анализа на этой неделе\n"
+
         cab_text = (
             f"👤 <b>Личный кабинет</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"<b>{name}</b> {username}\n"
-            f"📅 С нами с: <b>{since}</b>\n\n"
+            f"📅 С нами с: <b>{since}</b>\n"
+            f"{sub_line}\n"
             f"🏆 <b>Статус:</b> {lvl}\n"
             f"<i>{lvl_desc}</i>\n"
             f"<code>{progress}</code>\n\n"
@@ -1231,34 +1149,105 @@ async def handle_text(message: types.Message):
     elif text in ("🏒 Хоккей", "🏒 Hockey"):
         await _h_hockey.cmd_hockey(message)
 
-    elif text in ("🔥 Охота Химеры", "🔥 Chimera Hunt"):
+    elif text in ("🔥 Охота Химеры 📈", "🔥 Chimera Hunt 📈"):
         await cmd_chimera_hunt(message)
 
-    elif text in ("💎 VIP-доступ", "💎 VIP Access"):
-        vip_text = (
-            "💎 <b>VIP-доступ — скоро</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Расширенная аналитика, приоритетные сигналы,\n"
-            "эксклюзивные функции для серьёзных игроков.\n\n"
-            "✅ Приоритетные сигналы — раньше всех\n"
-            "✅ Расширенная аналитика матчей\n"
-            "✅ Личная статистика ROI\n"
-            "✅ Авто-сигналы каждое утро\n"
-            "✅ Эксклюзивные экспресс-подборки\n\n"
-            "🕐 <i>В разработке. Следи за обновлениями.</i>"
-        ) if lang == "ru" else (
-            "💎 <b>VIP Access — coming soon</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Advanced analytics, priority signals,\n"
-            "exclusive features for serious players.\n\n"
-            "✅ Priority signals — first to know\n"
-            "✅ Advanced match analytics\n"
-            "✅ Personal ROI statistics\n"
-            "✅ Daily auto-signals every morning\n"
-            "✅ Exclusive express selections\n\n"
-            "🕐 <i>In development. Stay tuned.</i>"
-        )
-        await message.answer(vip_text, parse_mode="HTML")
+    elif text in ("💎 Подписка Химера", "💎 Chimera Subscription"):
+        from database import get_subscription_status
+        sub = get_subscription_status(message.from_user.id)
+
+        if sub["has_sub"]:
+            is_trial = sub["days_left"] <= 3 and sub.get("trial_used")
+            if is_trial:
+                status_block = (
+                    f"🎁 <b>Пробная подписка активна</b>\n"
+                    f"⏳ Осталось: <b>{sub['days_left']} дн.</b>\n\n"
+                    f"Понравилось? Напиши нам — оформим полную подписку.\n"
+                ) if lang == "ru" else (
+                    f"🎁 <b>Trial subscription active</b>\n"
+                    f"⏳ Days left: <b>{sub['days_left']}</b>\n\n"
+                    f"Enjoying it? Write to us for a full subscription.\n"
+                )
+            else:
+                until_str = ""
+                if sub["until"]:
+                    try:
+                        from datetime import datetime, timezone
+                        until_str = datetime.fromisoformat(sub["until"]).strftime("%d.%m.%Y")
+                    except Exception:
+                        pass
+                status_block = (
+                    f"✅ <b>Подписка Химера активирована</b>\n"
+                    f"📅 Действует до: <b>{until_str}</b> ({sub['days_left']} дн.)\n\n"
+                    f"Полный доступ ко всем функциям открыт.\n"
+                ) if lang == "ru" else (
+                    f"✅ <b>Chimera Subscription active</b>\n"
+                    f"📅 Valid until: <b>{until_str}</b> ({sub['days_left']} days)\n\n"
+                    f"Full access to all features is open.\n"
+                )
+            vip_text = (
+                f"💎 <b>Подписка Химера</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{status_block}"
+            ) if lang == "ru" else (
+                f"💎 <b>Chimera Subscription</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{status_block}"
+            )
+            await message.answer(vip_text, parse_mode="HTML")
+        else:
+            free_line = (
+                f"📊 Бесплатный тариф: <b>{sub['weekly_used']}/2</b> анализа использовано на этой неделе\n\n"
+            ) if lang == "ru" else (
+                f"📊 Free plan: <b>{sub['weekly_used']}/2</b> analyses used this week\n\n"
+            )
+            if lang == "ru":
+                vip_text = (
+                    "💎 <b>Подписка Химера</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"{free_line}"
+                    "🆓 <b>Бесплатно</b> — навсегда\n"
+                    "  🐉 Химера-чат  ·  📊 Статистика  ·  👤 Кабинет\n"
+                    "  ⚽🎾🏀🏒🎮 Анализы — <b>2 в неделю</b> на все виды\n"
+                    "  ❌ Сигналы дня / Экспресс / Охота\n\n"
+                    "🎁 <b>Пробный</b> — 3 дня бесплатно\n"
+                    "  Всё из бесплатного +\n"
+                    "  ⚽🎾🏀🏒🎮 Анализы — <b>4 в день</b> на все виды\n"
+                    "  ✅ Сигналы дня  ·  ✅ Экспресс  ·  ✅ Охота\n\n"
+                    "💎 <b>Подписка</b> — 30 дней · <b>$70</b>\n"
+                    "  Всё без ограничений\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "🎁 <b>Хочешь попробовать бесплатно?</b>\n"
+                    "Напиши нам — дадим <b>3 дня пробного доступа</b> прямо сейчас.\n\n"
+                    "👇 Нажми кнопку ниже:"
+                )
+            else:
+                vip_text = (
+                    "💎 <b>Chimera Subscription</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"{free_line}"
+                    "🆓 <b>Free</b> — forever\n"
+                    "  🐉 Chimera chat  ·  📊 Statistics  ·  👤 Profile\n"
+                    "  ⚽🎾🏀🏒🎮 Analyses — <b>2 per week</b> across all sports\n"
+                    "  ❌ Daily Signals / Express / Hunt\n\n"
+                    "🎁 <b>Trial</b> — 3 days free\n"
+                    "  Everything from Free +\n"
+                    "  ⚽🎾🏀🏒🎮 Analyses — <b>4 per day</b> across all sports\n"
+                    "  ✅ Daily Signals  ·  ✅ Express  ·  ✅ Hunt\n\n"
+                    "💎 <b>Subscription</b> — 30 days · <b>$70</b>\n"
+                    "  Everything, unlimited\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "🎁 <b>Want to try for free?</b>\n"
+                    "Write to us — get <b>3 days trial access</b> right now.\n\n"
+                    "👇 Tap the button below:"
+                )
+            kb = types.InlineKeyboardMarkup(inline_keyboard=[[
+                types.InlineKeyboardButton(
+                    text="✍️ Хочу подписку" if lang == "ru" else "✍️ I want subscription",
+                    url="https://t.me/pankotsk1"
+                )
+            ]])
+            await message.answer(vip_text, parse_mode="HTML", reply_markup=kb)
 
     elif text in ("💬 Поддержка", "💬 Support"):
         kb = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -1670,7 +1659,7 @@ async def handle_callback(call: types.CallbackQuery):
             _fail_kb.button(text="🏠 Меню", callback_data="back_to_main")
             _fail_kb.adjust(2)
             await call.message.edit_text(
-                "⚠️ Не удалось выполнить анализ. Попробуй ещё раз.",
+                "😔 Произошёл сбой. Напиши нам в поддержку.",
                 reply_markup=_fail_kb.as_markup()
             )
 
@@ -1812,21 +1801,24 @@ async def handle_callback(call: types.CallbackQuery):
             filled = round(acc / 10)
             return "▓" * filled + "░" * (10 - filled)
 
-        all_total   = sum(_fresh_stats.get(k, {}).get("total", 0)         for k in ("football","cs2","tennis","basketball","hockey"))
-        all_checked = sum(_fresh_stats.get(k, {}).get("total_checked", 0) for k in ("football","cs2","tennis","basketball","hockey"))
-        all_correct = sum(_fresh_stats.get(k, {}).get("correct", 0)       for k in ("football","cs2","tennis","basketball","hockey"))
+        _main_sports_r = ("football", "tennis", "basketball", "hockey")
+        all_total   = sum(_fresh_stats.get(k, {}).get("total", 0)         for k in _main_sports_r)
+        all_checked = sum(_fresh_stats.get(k, {}).get("total_checked", 0) for k in _main_sports_r)
+        all_correct = sum(_fresh_stats.get(k, {}).get("correct", 0)       for k in _main_sports_r)
         all_acc     = round(all_correct / all_checked * 100, 1) if all_checked > 0 else 0
 
         txt = "📊 *Статистика Chimera AI*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         if all_checked > 0:
             txt += (
-                f"🎯 Угадано: *{all_correct} из {all_checked}*\n"
+                f"🎯 *Общий бот (без CS2):* *{all_correct} из {all_checked}*\n"
                 f"`{_acc_bar_r(all_acc)}` *{all_acc}%*\n"
                 f"📋 Всего: *{all_total}* | Ожидают: *{all_total - all_checked}*\n"
             )
         txt += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        for sport_key, sport_label in [("football","⚽ Футбол"),("cs2","🎮 CS2"),("tennis","🎾 Теннис"),("basketball","🏀 Баскетбол"),("hockey","🏒 Хоккей")]:
+        _sl = [("football","⚽ Футбол"),("cs2","🎮 CS2 _(бета)_"),("tennis","🎾 Теннис"),("basketball","🏀 Баскетбол"),("hockey","🏒 Хоккей")]
+        _sl.sort(key=lambda x: _fresh_stats.get(x[0], {}).get("accuracy", 0), reverse=True)
+        for sport_key, sport_label in _sl:
             s = _fresh_stats.get(sport_key, {})
             if not s.get("total"): continue
             checked = s.get("total_checked", 0)
@@ -1917,10 +1909,10 @@ async def handle_callback(call: types.CallbackQuery):
                 timeout=20.0
             )
         except asyncio.TimeoutError:
-            await call.message.edit_text("⚠️ Не удалось обновить — API не отвечает.", reply_markup=build_matches_keyboard(matches_cache))
+            await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.", reply_markup=build_matches_keyboard(matches_cache))
             return
         if not matches:
-            await call.message.edit_text("❌ Не удалось обновить матчи.", reply_markup=build_matches_keyboard(matches_cache))
+            await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.", reply_markup=build_matches_keyboard(matches_cache))
             return
         league_name = dict(FOOTBALL_LEAGUES).get(_current_league, "")
         await call.message.edit_text(
@@ -2256,7 +2248,19 @@ async def handle_callback(call: types.CallbackQuery):
             gpt_bet_signal = gpt_result.get("bet_signal", "")
             llama_outcome  = llama_result.get("recommended_outcome", "")
             gpt_outcome    = gpt_result.get("recommended_outcome", "")
-            ai_agrees_flag = (gpt_bet_signal == "СТАВИТЬ") or (gpt_outcome == llama_outcome and gpt_outcome != "")
+            _valid_outcomes = ("home_win", "away_win", "draw")
+            _gpt_out   = gpt_result.get("recommended_outcome", "")
+            _llama_out = llama_result.get("recommended_outcome", "")
+            if _gpt_out in _valid_outcomes and _llama_out in _valid_outcomes:
+                # Оба агента дали чёткий вердикт
+                if _gpt_out == _llama_out:
+                    ai_agrees_flag = True   # полное согласие
+                else:
+                    ai_agrees_flag = False  # явное расхождение — красный флаг
+            elif _gpt_out in _valid_outcomes or _llama_out in _valid_outcomes:
+                ai_agrees_flag = None   # один агент не определился — нейтрально
+            else:
+                ai_agrees_flag = None   # нет данных
 
             # Используем ансамблевые вероятности если есть, иначе ELO
             sig_probs = ensemble_probs or elo_probs or {}
@@ -2492,6 +2496,20 @@ async def handle_callback(call: types.CallbackQuery):
             except Exception as _e:
                 logger.debug(f"[ignore] {_e}")
             sig_text = format_signal(top_sig)
+            # Для ничьей — добавляем мнения AI агентов (они уже посчитаны выше)
+            if top_sig.get("draw_signal"):
+                _gpt_s  = gpt_result.get("summary", "") or ""
+                _llm_s  = llama_result.get("summary", "") or ""
+                _gpt_c  = gpt_result.get("confidence", 0)
+                _llm_c  = llama_result.get("confidence", 0)
+                if _gpt_s or _llm_s:
+                    sig_text += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    sig_text += "🤖 <b>Мнения агентов о матче:</b>\n"
+                    if _gpt_s:
+                        sig_text += f"🐍🦁🐐 Химера ({_gpt_c}%): <i>{_gpt_s[:250]}</i>\n"
+                    if _llm_s:
+                        sig_text += f"🌀 Тень ({_llm_c}%): <i>{_llm_s[:250]}</i>\n"
+                    sig_text += "⚠️ <i>Агенты анализировали исход матча, не ставку на ничью</i>"
             sig_text = "🐉 <b>ХИМЕРА (Змея + Лев + Козёл + Тень)</b>\n\n" + sig_text
             # Кнопка "Я поставил"
             _sig_kb = None
@@ -2516,6 +2534,19 @@ async def handle_callback(call: types.CallbackQuery):
             for _extra_sig in football_ai_signals[1:]:
                 try:
                     _extra_text = "🔀 <b>Дополнительный сигнал</b>\n\n" + format_signal(_extra_sig)
+                    if _extra_sig.get("draw_signal"):
+                        _gpt_s2 = gpt_result.get("summary", "") or ""
+                        _llm_s2 = llama_result.get("summary", "") or ""
+                        _gpt_c2 = gpt_result.get("confidence", 0)
+                        _llm_c2 = llama_result.get("confidence", 0)
+                        if _gpt_s2 or _llm_s2:
+                            _extra_text += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            _extra_text += "🤖 <b>Мнения агентов о матче:</b>\n"
+                            if _gpt_s2:
+                                _extra_text += f"🐍🦁🐐 Химера ({_gpt_c2}%): <i>{_gpt_s2[:250]}</i>\n"
+                            if _llm_s2:
+                                _extra_text += f"🌀 Тень ({_llm_c2}%): <i>{_llm_s2[:250]}</i>\n"
+                            _extra_text += "⚠️ <i>Агенты анализировали исход матча, не ставку на ничью</i>"
                     await call.message.answer(_extra_text, parse_mode="HTML")
                 except Exception as _e:
                     logger.debug(f"[ignore extra sig] {_e}")
@@ -3221,6 +3252,13 @@ async def cmd_signals(message: types.Message):
     global _signals_scan_in_progress
     if message.from_user:
         log_action(message.from_user.id, "signals")
+        # Проверка доступа — сигналы только для подписчиков
+        from access import check_access
+        reason = await check_access(message.from_user.id, message.bot,
+                                    require_full=True, count_analysis=False)
+        if reason != "ok":
+            await _send_access_denied(message, reason)
+            return
     import time as _time_mod
     from chimera_signal import compute_chimera_score, run_ai_verification, format_chimera_signals
 
@@ -3414,6 +3452,14 @@ async def cmd_signals(message: types.Message):
                         away = m.get("away", "")
                         if not home or not away:
                             continue
+                        # Tier-фильтр ДО дорогого API-вызова — экономит время на Tier-3 матчах
+                        _ct = m.get("commence_time", "") or m.get("time", "")
+                        _cs2_tier = m.get("tier", "B")
+                        _league_low = (m.get("league", "") + " " + m.get("tournament", "")).lower()
+                        _is_t3 = any(kw in _league_low for kw in CS2_TIER3_KEYWORDS) or _cs2_tier not in ("S", "A")
+                        if _is_t3:
+                            print(f"[CHIMERA CS2] Пропуск {home} vs {away}: Tier-3/regional")
+                            continue
                         analysis = calculate_cs2_win_prob(home, away)
                         h_prob = analysis.get("home_prob", 0)
                         a_prob = analysis.get("away_prob", 0)
@@ -3421,14 +3467,6 @@ async def cmd_signals(message: types.Message):
                             continue
                         # Пропускаем матчи без реальных данных (обе команды неизвестны)
                         data_conf = analysis.get("data_confidence", 0)
-                        _ct = m.get("commence_time", "") or m.get("time", "")
-                        _cs2_tier = m.get("tier", "B")
-                        _league_low = (m.get("league", "") + " " + m.get("tournament", "")).lower()
-                        _is_t3 = any(kw in _league_low for kw in CS2_TIER3_KEYWORDS) or _cs2_tier not in ("S", "A")
-                        # Tier-3 и региональные матчи пропускаем — слишком мало данных для надёжного прогноза
-                        if _is_t3:
-                            print(f"[CHIMERA CS2] Пропуск {home} vs {away}: Tier-3/regional")
-                            continue
                         if data_conf < 0.45:
                             print(f"[CHIMERA CS2] Пропуск {home} vs {away}: нет данных (conf={data_conf:.2f})")
                             continue
@@ -3450,6 +3488,7 @@ async def cmd_signals(message: types.Message):
                             home_form=h_stats.get("form", ""), away_form=a_stats.get("form", ""),
                             elo_home=analysis.get("elo_home", 1450), elo_away=analysis.get("elo_away", 1450),
                             league="CS2",
+                            apply_calibration=False,
                         )
                         try:
                             _cs2_totals = _ps_totals(
@@ -3509,6 +3548,8 @@ async def cmd_signals(message: types.Message):
                     ("icehockey_nhl",                  "🏒 NHL"),
                     ("icehockey_sweden_hockey_league", "🇸🇪 SHL"),
                     ("icehockey_ahl",                  "🇺🇸 AHL"),
+                    ("icehockey_liiga",                "🇫🇮 Finnish Liiga"),
+                    ("icehockey_sweden_allsvenskan",   "🇸🇪 Allsvenskan"),
                 ]:
                     try:
                         matches = get_hockey_matches(league_key)
@@ -3542,6 +3583,7 @@ async def cmd_signals(message: types.Message):
                                     home_form=hres.get("home_form", ""), away_form=hres.get("away_form", ""),
                                     elo_home=hres.get("elo_home", 1550), elo_away=hres.get("elo_away", 1550),
                                     league=league_key,
+                                    apply_calibration=False,
                                 )
                                 for hc in hcands:
                                     hc["sport"] = "hockey"
@@ -3590,7 +3632,15 @@ async def cmd_signals(message: types.Message):
                                 home_form=bres.get("home_form", ""), away_form=bres.get("away_form", ""),
                                 elo_home=bres.get("elo_home", 1550), elo_away=bres.get("elo_away", 1550),
                                 league=bkey,
+                                apply_calibration=False,
                             )
+                            # Фильтр: аутсайдеры с кэфом > 2.8 имеют плохой трек-рекорд
+                            # Также требуем разрыв модель/бук не более 2x (защита от ошибок ELO)
+                            bcands = [
+                                c for c in bcands
+                                if (c.get("odds", 0) <= 2.8)
+                                and (c.get("prob", 0) >= 55)
+                            ]
                             bct = bm.get("commence_time", "")
                             for bc in bcands:
                                 bc["sport"] = "basketball"
@@ -3656,9 +3706,17 @@ async def cmd_signals(message: types.Message):
 
     # ── Сортируем, берём топ-3 для AI ────────────────────────────────────
     # Фильтр: EV > 5% и кэф >= 1.40 и не аномальный EV (> 80% = баг данных)
+    # + минимальный CHIMERA Score (для футбола выше: есть xG+H2H; для остальных ниже)
+    from config_thresholds import MIN_CHIMERA_SCORE as _MIN_CS
+    _MIN_CS_OTHER = 38  # баскетбол/хоккей/теннис — нет xG и H2H → потолок на 18 очков ниже
     all_candidates = [
         c for c in all_candidates
-        if c.get("ev", 0) > 5 and c.get("odds", 0) >= 1.40 and c.get("ev", 0) <= 80
+        if c.get("ev", 0) > 5
+        and c.get("odds", 0) >= 1.40
+        and c.get("ev", 0) <= 80
+        and c.get("chimera_score", 0) >= (
+            _MIN_CS if c.get("sport") == "football" else _MIN_CS_OTHER
+        )
     ]
     all_candidates.sort(key=lambda x: x["chimera_score"], reverse=True)
     top_candidates = all_candidates[:3]

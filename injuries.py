@@ -17,7 +17,36 @@ logger = logging.getLogger(__name__)
 
 # Кэш: {team_name: (data, timestamp)}
 _injury_cache: dict = {}
-CACHE_TTL = 6 * 3600  # 6 часов
+CACHE_TTL    = 6 * 3600   # 6 часов
+_CACHE_FILE  = os.path.join(os.path.dirname(__file__), "injuries_cache.json")
+
+
+def _load_cache():
+    """Загружает кеш с диска при старте (переживает перезапуск)."""
+    global _injury_cache
+    try:
+        if os.path.exists(_CACHE_FILE):
+            with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            cutoff = time.time() - CACHE_TTL
+            _injury_cache = {k: tuple(v) for k, v in raw.items() if v[1] > cutoff}
+    except Exception:
+        _injury_cache = {}
+
+
+def _save_cache():
+    """Сохраняет кеш на диск."""
+    try:
+        tmp = _CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({k: list(v) for k, v in _injury_cache.items()},
+                      f, ensure_ascii=False)
+        os.replace(tmp, _CACHE_FILE)
+    except Exception:
+        pass
+
+
+_load_cache()  # загружаем при импорте
 
 
 def _cache_get(team: str):
@@ -30,16 +59,31 @@ def _cache_get(team: str):
 
 def _cache_set(team: str, data):
     _injury_cache[team] = (data, time.time())
+    _save_cache()
 
 
 def fetch_injury_news(team_name: str, max_results: int = 8) -> list:
-    """Ищет свежие новости о травмах и дисквалификациях команды через GNews."""
+    """Ищет свежие новости о травмах команды через GNews.
+    Фильтрует статьи — оставляет только те, где упоминается сама команда.
+    """
     try:
         from gnews import GNews
-        gn = GNews(language='en', country='US', max_results=max_results)
-        # Ищем конкретно по травмам
+        gn = GNews(language='en', country='US', max_results=max_results * 2)
         articles = gn.get_news(f"{team_name} injury suspension doubt miss")
-        return articles if articles else []
+        if not articles:
+            return []
+
+        # Оставляем только статьи, где имя команды реально упомянуто в заголовке/описании
+        team_lower = team_name.lower()
+        # Короткие варианты имени для поиска ("Leeds United" → ["leeds", "united", "leeds united"])
+        name_parts = [team_lower] + [p for p in team_lower.split() if len(p) > 3]
+        filtered = []
+        for art in articles:
+            text = (art.get("title", "") + " " + art.get("description", "")).lower()
+            if any(part in text for part in name_parts):
+                filtered.append(art)
+        logger.info(f"[Травмы] {team_name}: {len(articles)} статей → {len(filtered)} релевантных")
+        return filtered[:max_results]
     except Exception as e:
         logger.warning(f"[Травмы] GNews ошибка для {team_name}: {e}")
         return []
@@ -76,23 +120,24 @@ def extract_injuries_with_ai(team_name: str, news_articles: list) -> dict:
 
         news_text = "\n".join(headlines)
 
-        prompt = f"""Analyze these news headlines about {team_name} football club and extract injury/suspension information.
+        prompt = f"""You are analyzing injury news specifically for {team_name} football club.
 
 Headlines:
 {news_text}
 
-Return a JSON object with these keys:
-- "injured": list of player names confirmed injured (e.g. ["Diogo Jota", "Curtis Jones"])
-- "suspended": list of player names suspended/banned
-- "doubts": list of player names doubtful/uncertain
-- "returning": list of player names returning from injury
+CRITICAL RULES:
+1. Only include players who play FOR {team_name} — ignore all players from other clubs
+2. If a headline mentions a player from another team, skip it entirely
+3. Only include players explicitly linked to {team_name} in the same sentence/headline
+4. When in doubt — exclude the player (false positives are worse than false negatives)
 
-Rules:
-- Only include players clearly mentioned in the headlines
-- Use full player names
-- If no players found for a category, use empty list []
-- Return ONLY valid JSON, no explanation
+Return a JSON object:
+- "injured": confirmed injured {team_name} players only
+- "suspended": suspended/banned {team_name} players only
+- "doubts": doubtful/uncertain {team_name} players only
+- "returning": returning from injury {team_name} players only
 
+Return ONLY valid JSON, no explanation.
 Example: {{"injured": ["Player A"], "suspended": [], "doubts": ["Player B"], "returning": []}}"""
 
         response = client.chat.completions.create(
@@ -242,6 +287,136 @@ def get_match_injuries(home_team: str, away_team: str) -> tuple:
     away_injuries = get_team_injuries(away_team)
     block = format_injuries_block(home_team, away_team, home_injuries, away_injuries)
     return home_injuries, away_injuries, block
+
+
+# ── NBA/NHL Injury data via ESPN unofficial API ───────────────────────────────
+
+_ESPN_NBA_INJURIES_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+_ESPN_NHL_INJURIES_URL = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries"
+_espn_cache: dict = {}
+_ESPN_TTL = 3600  # 1 час
+
+# Алиасы: как ESPN называет команды → наши названия
+_ESPN_NBA_ALIASES = {
+    "LA Lakers": "Los Angeles Lakers",
+    "LA Clippers": "Los Angeles Clippers",
+    "GS Warriors": "Golden State Warriors",
+    "NY Knicks": "New York Knicks",
+    "OKC Thunder": "Oklahoma City Thunder",
+    "SA Spurs": "San Antonio Spurs",
+    "NO Pelicans": "New Orleans Pelicans",
+    "NJ Nets": "Brooklyn Nets",
+}
+
+
+def _fetch_espn_injuries(url: str, cache_key: str) -> dict:
+    """Загружает травмы с ESPN API. Возвращает {team_name: [player_names]}."""
+    now = time.time()
+    if cache_key in _espn_cache and now - _espn_cache[cache_key]["ts"] < _ESPN_TTL:
+        return _espn_cache[cache_key]["data"]
+
+    try:
+        import requests as _req
+        r = _req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if not r.ok:
+            return {}
+
+        result = {}
+        for item in r.json().get("injuries", []):
+            team_name = item.get("team", {}).get("displayName", "")
+            team_name = _ESPN_NBA_ALIASES.get(team_name, team_name)
+            player_name = item.get("athlete", {}).get("displayName", "")
+            status = item.get("status", "").lower()
+            # Только точно не играющие (out/doubtful/questionable)
+            if player_name and status in ("out", "doubtful", "questionable"):
+                result.setdefault(team_name, []).append({
+                    "name": player_name,
+                    "status": status,
+                })
+
+        _espn_cache[cache_key] = {"data": result, "ts": now}
+        logger.info(f"[ESPN Injuries] Загружено команд: {len(result)}")
+        return result
+    except Exception as e:
+        logger.warning(f"[ESPN Injuries] Ошибка {url}: {e}")
+        return {}
+
+
+def get_nba_injuries(team_name: str) -> dict:
+    """
+    Получает травмы NBA из ESPN API. Без API-ключа, бесплатно.
+    Кэш 1 час. Возвращает тот же формат что get_team_injuries().
+    """
+    cached = _cache_get(f"nba_{team_name}")
+    if cached:
+        return cached
+
+    all_injuries = _fetch_espn_injuries(_ESPN_NBA_INJURIES_URL, "nba")
+
+    # Ищем команду (точное совпадение или частичное)
+    team_lower = team_name.lower()
+    team_data = []
+    for espn_team, players in all_injuries.items():
+        if team_lower in espn_team.lower() or espn_team.lower() in team_lower:
+            team_data = players
+            break
+
+    injured   = [p["name"] for p in team_data if p["status"] == "out"]
+    doubts    = [p["name"] for p in team_data if p["status"] in ("doubtful", "questionable")]
+    missing   = len(injured)
+    impact    = "high" if missing >= 2 else ("medium" if missing == 1 else ("low" if doubts else "none"))
+
+    result = {
+        "team": team_name,
+        "injured": injured,
+        "suspended": [],
+        "doubts": doubts,
+        "returning": [],
+        "total_missing": missing,
+        "impact": impact,
+        "news_count": len(team_data),
+        "source": "espn",
+    }
+    _cache_set(f"nba_{team_name}", result)
+    return result
+
+
+def get_nhl_injuries(team_name: str) -> dict:
+    """
+    Получает травмы NHL из ESPN API. Без API-ключа, бесплатно.
+    Особенно важно для вратарей.
+    """
+    cached = _cache_get(f"nhl_{team_name}")
+    if cached:
+        return cached
+
+    all_injuries = _fetch_espn_injuries(_ESPN_NHL_INJURIES_URL, "nhl")
+
+    team_lower = team_name.lower()
+    team_data = []
+    for espn_team, players in all_injuries.items():
+        if team_lower in espn_team.lower() or espn_team.lower() in team_lower:
+            team_data = players
+            break
+
+    injured  = [p["name"] for p in team_data if p["status"] == "out"]
+    doubts   = [p["name"] for p in team_data if p["status"] in ("doubtful", "questionable")]
+    missing  = len(injured)
+    impact   = "high" if missing >= 2 else ("medium" if missing == 1 else ("low" if doubts else "none"))
+
+    result = {
+        "team": team_name,
+        "injured": injured,
+        "suspended": [],
+        "doubts": doubts,
+        "returning": [],
+        "total_missing": missing,
+        "impact": impact,
+        "news_count": len(team_data),
+        "source": "espn",
+    }
+    _cache_set(f"nhl_{team_name}", result)
+    return result
 
 
 async def get_match_injuries_async(home_team: str, away_team: str) -> tuple:

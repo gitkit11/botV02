@@ -1,0 +1,49 @@
+{
+  "feature_cols": [
+    "rank_diff",
+    "rank_log_ratio",
+    "p1_rank",
+    "p2_rank",
+    "p1_form",
+    "p2_form",
+    "form_diff",
+    "p1_age",
+    "p2_age",
+    "age_diff",
+    "h2h_adv",
+    "h2h_total",
+    "surface",
+    "level",
+    "round"
+  ],
+  "acc_all": 0.6388,
+  "roc_auc": 0.6324,
+  "n_train": 19748,
+  "n_test": 3292,
+  "bet_threshold": 0.7,
+  "surface_map": {
+    "Hard": 0,
+    "Clay": 1,
+    "Grass": 2,
+    "Carpet": 0
+  },
+  "level_map": {
+    "G": 4,
+    "F": 3,
+    "M": 3,
+    "A": 2,
+    "D": 1,
+    "O": 1
+  },
+  "round_map": {
+    "F": 7,
+    "SF": 6,
+    "QF": 5,
+    "R16": 4,
+    "R32": 3,
+    "R64": 2,
+    "R128": 1,
+    "RR": 3,
+    "BR": 2
+  }
+}

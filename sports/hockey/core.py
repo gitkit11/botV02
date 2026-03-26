@@ -29,42 +29,43 @@ HOCKEY_LEAGUES = [
     ("icehockey_sweden_allsvenskan",     "🇸🇪 Allsvenskan"),
 ]
 
-# ── ELO рейтинги NHL (сезон 2025-26) ─────────────────────────────────────────
+# ── ELO рейтинги NHL (сезон 2024-25, обновлено март 2025) ─────────────────────
+# Источник: реальные standings NHL + playoff history
 NHL_ELO = {
     # Восточная конференция
-    "Washington Capitals":        1640,
-    "Florida Panthers":           1635,
-    "Boston Bruins":              1625,
-    "Toronto Maple Leafs":        1620,
-    "Tampa Bay Lightning":        1615,
+    "Washington Capitals":        1645,   # Лидер Востока, 1-е место
+    "Florida Panthers":           1640,   # Защищающийся чемпион Кубка Стэнли
+    "Toronto Maple Leafs":        1625,
+    "Tampa Bay Lightning":        1620,
+    "Boston Bruins":              1615,
     "Carolina Hurricanes":        1610,
-    "New Jersey Devils":          1600,
-    "New York Rangers":           1595,
-    "New York Islanders":         1570,
-    "Detroit Red Wings":          1560,
-    "Ottawa Senators":            1555,
-    "Pittsburgh Penguins":        1550,
-    "Philadelphia Flyers":        1540,
-    "Montreal Canadiens":         1530,
-    "Buffalo Sabres":             1520,
+    "New Jersey Devils":          1605,
+    "Ottawa Senators":            1590,   # Сильный сезон
+    "New York Rangers":           1585,
+    "Detroit Red Wings":          1565,
+    "Buffalo Sabres":             1555,
+    "New York Islanders":         1550,
+    "Pittsburgh Penguins":        1540,
+    "Philadelphia Flyers":        1530,
+    "Montreal Canadiens":         1520,
     # Западная конференция
-    "Vegas Golden Knights":       1650,
-    "Colorado Avalanche":         1645,
+    "Winnipeg Jets":              1655,   # Лидер Запада по очкам
+    "Vegas Golden Knights":       1645,
+    "Colorado Avalanche":         1640,
     "Dallas Stars":               1630,
-    "Winnipeg Jets":              1625,
-    "Edmonton Oilers":            1620,
-    "Los Angeles Kings":          1610,
-    "Minnesota Wild":             1600,
-    "Calgary Flames":             1585,
-    "Nashville Predators":        1575,
-    "Vancouver Canucks":          1570,
-    "Seattle Kraken":             1560,
-    "St. Louis Blues":            1550,
-    "Arizona Coyotes":            1510,
-    "Anaheim Ducks":              1505,
-    "Chicago Blackhawks":         1500,
-    "San Jose Sharks":            1490,
+    "Minnesota Wild":             1620,
+    "Los Angeles Kings":          1615,
+    "Edmonton Oilers":            1610,   # Финалисты Кубка 2024
+    "Calgary Flames":             1580,
+    "St. Louis Blues":            1570,
+    "Nashville Predators":        1560,
+    "Vancouver Canucks":          1555,
+    "Seattle Kraken":             1545,
+    "Utah Hockey Club":           1520,   # Arizona Coyotes relocated 2024
     "Columbus Blue Jackets":      1515,
+    "Anaheim Ducks":              1505,
+    "Chicago Blackhawks":         1495,
+    "San Jose Sharks":            1480,   # Отстройка команды
 }
 
 # ── ELO рейтинги SHL (Швеция) ─────────────────────────────────────────────────
@@ -94,6 +95,7 @@ REST_PENALTY = {0: -0.06, 1: -0.04, 2: -0.02}
 _form_cache:      dict  = {}
 _b2b_cache:       dict  = {}
 _rest_days_cache: dict  = {}
+_goals_cache:     dict  = {}   # {team: {"gf": float, "ga": float, "gp": int}}
 _cache_ts:        float = 0.0
 _CACHE_TTL = 3600  # 1 час
 
@@ -130,14 +132,14 @@ def _fetch_recent_scores(league_key: str) -> list:
         return []
     try:
         from odds_cache import get_scores as _get_scores
-        all_scores = _get_scores(league_key, days_from=3)
+        all_scores = _get_scores(league_key, days_from=7)
         return [m for m in all_scores if m.get("completed")]
     except ImportError:
         pass
     try:
         r = requests.get(
             f"https://api.the-odds-api.com/v4/sports/{league_key}/scores/",
-            params={"apiKey": THE_ODDS_API_KEY, "daysFrom": 3},
+            params={"apiKey": THE_ODDS_API_KEY, "daysFrom": 7},
             timeout=10,
         )
         if r.ok:
@@ -148,7 +150,7 @@ def _fetch_recent_scores(league_key: str) -> list:
 
 
 def _build_form_and_b2b(league_key: str):
-    global _form_cache, _b2b_cache, _cache_ts
+    global _form_cache, _b2b_cache, _rest_days_cache, _goals_cache, _cache_ts
     import time
     if time.time() - _cache_ts < _CACHE_TTL:
         return
@@ -156,6 +158,7 @@ def _build_form_and_b2b(league_key: str):
     scores = _fetch_recent_scores(league_key)
     now = datetime.now(timezone.utc)
     team_results: dict = {}
+    team_goals:   dict = {}   # {team: {"gf": [], "ga": []}}
 
     for m in scores:
         home = m.get("home_team", "")
@@ -164,13 +167,24 @@ def _build_form_and_b2b(league_key: str):
         score_map  = {s["name"]: int(s["score"]) for s in raw_scores if s.get("name") and s.get("score")}
         h_score = score_map.get(home, 0)
         a_score = score_map.get(away, 0)
-        if h_score == a_score:
+        if h_score == 0 and a_score == 0:
             continue
         ct = m.get("commence_time", "")
         try:
             dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
         except Exception:
             dt = now - timedelta(days=3)
+
+        # Goals tracking
+        team_goals.setdefault(home, {"gf": [], "ga": []})
+        team_goals.setdefault(away, {"gf": [], "ga": []})
+        team_goals[home]["gf"].append(h_score)
+        team_goals[home]["ga"].append(a_score)
+        team_goals[away]["gf"].append(a_score)
+        team_goals[away]["ga"].append(h_score)
+
+        if h_score == a_score:
+            continue
         h_won = h_score > a_score
         team_results.setdefault(home, []).append((dt, h_won))
         team_results.setdefault(away, []).append((dt, not h_won))
@@ -185,6 +199,15 @@ def _build_form_and_b2b(league_key: str):
             days_rest = int(hours_ago / 24)
             _b2b_cache[team] = hours_ago < 36
             _rest_days_cache[team] = days_rest
+
+    for team, g in team_goals.items():
+        gp = len(g["gf"])
+        if gp > 0:
+            _goals_cache[team] = {
+                "gf": round(sum(g["gf"]) / gp, 2),
+                "ga": round(sum(g["ga"]) / gp, 2),
+                "gp": gp,
+            }
 
     _cache_ts = __import__("time").time()
 
@@ -202,6 +225,12 @@ def is_back_to_back(team: str, league_key: str = "") -> bool:
 def get_rest_days(team: str, league_key: str = "") -> int:
     _build_form_and_b2b(league_key)
     return _rest_days_cache.get(team, 99)
+
+
+def get_team_goals_stats(team: str, league_key: str = "") -> dict:
+    """Возвращает {'gf': float, 'ga': float, 'gp': int} из недавних матчей."""
+    _build_form_and_b2b(league_key)
+    return _goals_cache.get(team, {})
 
 
 def _fatigue_penalty(team: str, league_key: str = "") -> float:
@@ -395,40 +424,71 @@ def calculate_hockey_win_prob(
     form_a = _form_score(away_form)
 
     # Читаем веса из HOCKEY_CFG (MetaLearner обновляет их после накопления данных)
-    W_ELO = W_ODDS = W_HOME = W_FORM = 0.35  # default fallback
+    # W_HOME=0 — домашнее преимущество уже учтено в ELO (+40) и рыночных коэффициентах
     try:
         from signal_engine import HOCKEY_CFG
-        W_ELO  = HOCKEY_CFG.get("weight_elo",  0.30)
-        W_ODDS = HOCKEY_CFG.get("weight_odds", 0.40)
-        W_HOME = HOCKEY_CFG.get("weight_home", 0.15)
+        W_ELO  = HOCKEY_CFG.get("weight_elo",  0.35)
+        W_ODDS = HOCKEY_CFG.get("weight_odds", 0.50)
         W_FORM = HOCKEY_CFG.get("weight_form", 0.15)
     except Exception:
-        W_ELO, W_ODDS, W_HOME, W_FORM = 0.30, 0.40, 0.15, 0.15
+        W_ELO, W_ODDS, W_FORM = 0.35, 0.50, 0.15
 
-    # Home ice advantage ~54% исторически (NHL regular season)
-    home_ice_advantage = 0.54
+    # Нормализуем форму чтобы сумма = 1 (иначе форма влияет на масштаб, а не на соотношение)
+    form_total = form_h + form_a
+    if form_total > 0:
+        norm_form_h = form_h / form_total
+        norm_form_a = form_a / form_total
+    else:
+        norm_form_h = norm_form_a = 0.5
 
-    raw_h = (
-        W_ELO  * elo_h
-        + W_ODDS * nv_h
-        + W_HOME * home_ice_advantage
-        + W_FORM * form_h
-    )
-    raw_a = (
-        W_ELO  * elo_a
-        + W_ODDS * nv_a
-        + W_HOME * (1 - home_ice_advantage)
-        + W_FORM * form_a
-    )
+    # Голы за последние игры (Голы/Игра) — дополнительный фактор атаки/защиты
+    h_goals = get_team_goals_stats(home, league_key)
+    a_goals = get_team_goals_stats(away, league_key)
+    goals_factor_h = goals_factor_a = 0.0
+    if h_goals.get("gp", 0) >= 3 and a_goals.get("gp", 0) >= 3:
+        # Комбинированная сила = ((GF - GA) / среднее) — центрируем относительно друг друга
+        h_net = h_goals.get("gf", 3.0) - h_goals.get("ga", 3.0)
+        a_net = a_goals.get("gf", 3.0) - a_goals.get("ga", 3.0)
+        net_range = max(abs(h_net - a_net), 0.1)
+        goals_factor_h = max(-0.06, min(0.06, (h_net - a_net) / net_range * 0.06))
+        goals_factor_a = -goals_factor_h
+
+    raw_h = W_ELO * elo_h + W_ODDS * nv_h + W_FORM * norm_form_h
+    raw_a = W_ELO * elo_a + W_ODDS * nv_a + W_FORM * norm_form_a
     total = raw_h + raw_a
     h_prob = round(raw_h / total, 4) if total > 0 else 0.5
     a_prob = round(1 - h_prob, 4)
 
-    # Штраф за усталость
+    # Голевой фактор (малый корректировочный вес)
+    h_prob = max(0.05, min(0.95, h_prob + goals_factor_h))
+    a_prob = round(1 - h_prob, 4)
+
+    # Штраф за усталость (применяем обоим независимо, затем ренормализуем)
     h_fatigue = _fatigue_penalty(home, league_key)
     a_fatigue = _fatigue_penalty(away, league_key)
     h_prob = max(0.05, min(0.95, h_prob + h_fatigue))
     a_prob = max(0.05, min(0.95, a_prob + a_fatigue))
+    # ВАЖНО: ренормализация после независимых штрафов чтобы h+a = 1.0
+    _ft = h_prob + a_prob
+    if _ft > 0:
+        h_prob = round(h_prob / _ft, 4)
+        a_prob = round(1 - h_prob, 4)
+
+    # Штраф за травмы (NHL через ESPN API, -2.5% за игрока, макс -10%)
+    h_inj = a_inj = None
+    if "nhl" in league_key.lower() or league_key in ("icehockey_nhl", ""):
+        try:
+            from injuries import get_nhl_injuries as _get_nhl_inj
+            h_inj = _get_nhl_inj(home)
+            a_inj = _get_nhl_inj(away)
+            h_missing = h_inj.get("total_missing", 0)
+            a_missing = a_inj.get("total_missing", 0)
+            h_inj_pen = min(0.10, h_missing * 0.025)
+            a_inj_pen = min(0.10, a_missing * 0.025)
+            h_prob = max(0.05, min(0.95, h_prob + a_inj_pen - h_inj_pen))
+            a_prob = round(1 - h_prob, 4)
+        except Exception:
+            pass
 
     # EV
     h_odds_val = odds.get("home_win", 0.0)
@@ -439,13 +499,24 @@ def calculate_hockey_win_prob(
     # Сигнал — если хотя бы один кеф отсутствует → сигнал недостоверен
     both_odds_present = h_odds_val > 1.01 and a_odds_val > 1.01
     best_prob = max(h_prob, a_prob)
+    best_pick = home if h_prob >= a_prob else away
     best_ev   = h_ev if h_prob >= a_prob else a_ev
     best_odds = h_odds_val if h_prob >= a_prob else a_odds_val
+
+    # Проверяем наличие реальных ELO данных (если обе команды = DEFAULT_ELO → нет данных)
+    _h_elo_val = _get_elo(home, league_key)
+    _a_elo_val = _get_elo(away, league_key)
+    _no_elo_data = (_h_elo_val == DEFAULT_ELO and _a_elo_val == DEFAULT_ELO)
+
     try:
         from signal_engine import get_bet_tier as _get_tier
         bet_signal = _get_tier(best_prob, best_ev * 100, "hockey") if both_odds_present else "НЕ СТАВИТЬ"
     except Exception:
         bet_signal = "СТАВИТЬ 🔥" if (best_ev > 0.08 and best_prob >= 0.52 and both_odds_present) else "НЕ СТАВИТЬ"
+
+    # Блокируем ставки для команд без реального ELO (AHL / неизвестные лиги)
+    if _no_elo_data and best_odds > 2.3:
+        bet_signal = "НЕ СТАВИТЬ"
 
     # Андердог-ценность для хоккея
     underdog_value = None
@@ -465,7 +536,9 @@ def calculate_hockey_win_prob(
     # Причина НЕ СТАВИТЬ
     no_bet_reason = ""
     if bet_signal == "НЕ СТАВИТЬ":
-        if not both_odds_present:
+        if _no_elo_data and best_odds > 2.3:
+            no_bet_reason = "⚠️ Нет ELO данных для этих команд — прогноз ненадёжен при высоком кэфе"
+        elif not both_odds_present:
             no_bet_reason = "⚠️ Коэффициенты не найдены у букмекера"
         elif best_ev < 0:
             bk_implied = round(100 / best_odds) if best_odds > 1 else 0
@@ -484,14 +557,19 @@ def calculate_hockey_win_prob(
         "bet_signal":      bet_signal,
         "no_bet_reason":   no_bet_reason,
         "underdog_value":  underdog_value,
-        "elo_home":    _get_elo(home, league_key),
-        "elo_away":    _get_elo(away, league_key),
-        "elo_gap":     abs(_get_elo(home, league_key) - _get_elo(away, league_key)),
+        "elo_home":    _h_elo_val,
+        "elo_away":    _a_elo_val,
+        "elo_gap":     abs(_h_elo_val - _a_elo_val),
+        "no_elo_data": _no_elo_data,
         "home_form":   home_form,
         "away_form":   away_form,
         "home_b2b":    is_back_to_back(home, league_key),
         "away_b2b":    is_back_to_back(away, league_key),
         "total_analysis": _analyze_total(odds),
+        "home_injuries": h_inj or {},
+        "away_injuries": a_inj or {},
+        "home_goals":  h_goals,
+        "away_goals":  a_goals,
     }
 
 
@@ -504,7 +582,9 @@ def _analyze_total(odds: dict) -> dict:
         return {}
     margin  = 1 / over_o + 1 / under_o
     nv_over = (1 / over_o) / margin
-    # В NHL средний тотал 6.0, линия меньше 5.5 → склонность к ОверU
+    # В NHL средний тотал 6.0 голов. ~25% игр идут в ОТ/буллиты (+1 гол).
+    # Линия < 5.5 → склонность к OVER (матчи обычно результативнее)
+    # Линия > 6.5 → склонность к UNDER (стены)
     lean = "Over" if line < 5.5 else ("Under" if line > 6.5 else "—")
     return {
         "line":       line,
@@ -512,6 +592,7 @@ def _analyze_total(odds: dict) -> dict:
         "under_odds": under_o,
         "nv_over":    round(nv_over, 3),
         "lean":       lean,
+        "ot_note":    "~25% игр NHL завершаются в ОТ/буллиты (+1 шайба)" if 5.0 <= line <= 6.5 else "",
     }
 
 
@@ -648,6 +729,9 @@ def format_hockey_total_report(
     ]
     if lean != "—":
         lines.append(f"📐 Склонность: <b>{lean}</b>  (NHL avg ≈ 6.0 шайб)")
+    ot_note = total.get("ot_note", "")
+    if ot_note:
+        lines.append(f"⏱ <i>{ot_note}</i>")
 
     lines += [
         "",
@@ -819,17 +903,47 @@ def format_hockey_report(
     elif gpt_verdict and llama_verdict:
         consensus_block = "⚡ <b>AI Расхождение:</b> Агенты не согласны — выше риск\n"
 
-    # Форма
+    # Предупреждение отсутствия ELO данных
+    no_elo_warn = ""
+    if analysis.get("no_elo_data"):
+        no_elo_warn = "⚠️ <i>Команды не в базе ELO — прогноз основан только на букмекерах</i>\n"
+
+    # Форма + голы
     form_block = ""
     if home_form or away_form:
         form_block = (
             f"📈 <b>Форма:</b>  {home_team}: {home_form or '—'}  |  {away_team}: {away_form or '—'}\n"
+        )
+    home_goals = analysis.get("home_goals", {})
+    away_goals = analysis.get("away_goals", {})
+    goals_block = ""
+    if home_goals.get("gp", 0) >= 3 and away_goals.get("gp", 0) >= 3:
+        goals_block = (
+            f"🥅 <b>Голы/игра</b> (посл. {home_goals['gp']}г): "
+            f"{home_team} {home_goals['gf']} GF / {home_goals['ga']} GA  |  "
+            f"{away_team} {away_goals['gf']} GF / {away_goals['ga']} GA\n"
         )
     b2b_block = ""
     if home_b2b:
         b2b_block += f"⚠️ {home_team} играл вчера (усталость)\n"
     if away_b2b:
         b2b_block += f"⚠️ {away_team} играл вчера (усталость)\n"
+
+    # Травмы (NHL через ESPN)
+    inj_block = ""
+    home_inj = analysis.get("home_injuries", {})
+    away_inj = analysis.get("away_injuries", {})
+    for team_name, inj in ((home_team, home_inj), (away_team, away_inj)):
+        if not inj:
+            continue
+        parts = []
+        if inj.get("injured"):
+            parts.append(f"🤕 {', '.join(inj['injured'])}")
+        if inj.get("doubts"):
+            parts.append(f"❓ {', '.join(inj['doubts'])}")
+        if parts:
+            impact_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(inj.get("impact", ""), "")
+            inj_block += f"{impact_icon} {team_name}: {' | '.join(parts)}\n"
 
     # Тотал
     total_block = ""
@@ -870,14 +984,20 @@ def format_hockey_report(
             f"<i>{llama_summary[:300]}</i>",
         ]
 
-    if consensus_block or form_block or b2b_block:
+    if no_elo_warn or consensus_block or form_block or goals_block or b2b_block or inj_block:
         lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        if no_elo_warn:
+            lines.append(no_elo_warn.strip())
         if consensus_block:
             lines.append(consensus_block.strip())
         if form_block:
             lines.append(form_block.strip())
+        if goals_block:
+            lines.append(goals_block.strip())
         if b2b_block:
             lines.append(b2b_block.strip())
+        if inj_block:
+            lines += ["", f"🏥 <b>Травмы/выбывшие (NHL):</b>", inj_block.strip()]
 
     if total_block:
         lines.append(total_block.strip())

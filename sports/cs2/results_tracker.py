@@ -321,10 +321,14 @@ def check_and_update_cs2_results() -> int:
         actual_outcome = "home_win" if winner == home else "away_win"
         is_correct = 1 if (recommended and recommended == actual_outcome) else 0
 
-        # ROI (упрощённый, на основе кэфа победителя)
+        # ROI (только на основе реальных коэффициентов; без кэфа — None, не считаем)
         if is_correct:
-            odds = pred.get("bookmaker_odds_home" if actual_outcome == "home_win" else "bookmaker_odds_away") or 1.85
-            roi = round(float(odds) - 1, 3)
+            odds_key = "bookmaker_odds_home" if actual_outcome == "home_win" else "bookmaker_odds_away"
+            raw_odds = pred.get(odds_key)
+            if raw_odds and float(raw_odds) > 1.01:
+                roi = round(float(raw_odds) - 1, 3)
+            else:
+                roi = None   # нет реального кэфа — не учитываем в ROI статистике
         else:
             roi = -1.0
 

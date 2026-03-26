@@ -14,10 +14,49 @@ from circuit_breaker import all_statuses as cb_all_statuses
 from database import (
     get_admin_stats, get_stavit_bets, set_manual_result,
     reset_user_bets, get_pending_stavit,
+    grant_subscription, grant_trial, revoke_subscription,
+    get_users_list, upsert_user, reset_user_for_testing,
 )
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+@router.message(Command("commands"))
+async def cmd_commands(message: types.Message):
+    is_admin = message.from_user.id in ADMIN_IDS
+    text = (
+        "📋 <b>Команды CHIMERA AI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>Основные:</b>\n"
+        "/start — перезапустить бота / вернуться в меню\n"
+        "/stats — статистика прогнозов\n"
+        "/commands — список всех команд\n\n"
+        "<b>Кнопки меню:</b>\n"
+        "📡 Сигналы дня — лучшая ставка дня от Химеры\n"
+        "🎯 Экспресс — готовый экспресс из 2–3 ставок\n"
+        "⚽ Футбол / 🎾 Теннис / 🏀 Баскетбол / 🏒 Хоккей — анализ матчей\n"
+        "🎮 CS2 — киберспорт (бета)\n"
+        "🔥 Охота Химеры — движение линий\n"
+        "📊 Статистика — винрейт бота\n"
+        "👤 Кабинет — твой профиль и подписка\n"
+        "💎 Подписка Химера — тарифы и доступ\n"
+        "🐉 Химера (чат) — задай любой вопрос\n"
+    )
+    if is_admin:
+        text += (
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🔧 <b>Админ-команды:</b>\n"
+            "/admin — панель управления\n"
+            "/sub @username 30 — выдать подписку на N дней\n"
+            "/trial @username — выдать пробный доступ (3 дня)\n"
+            "/revoke @username — отозвать подписку\n"
+            "/resetuser @username — сбросить пользователя (для теста)\n"
+            "/resetuser me — сбросить себя\n"
+            "/users — список последних 25 пользователей\n"
+            "/ping — статус бота и API\n"
+        )
+    await message.answer(text, parse_mode="HTML")
 
 
 def _breakers_time(name: str) -> int:
@@ -170,6 +209,331 @@ async def cmd_admin(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         return
     await _send_admin_panel(message, message.from_user.id)
+
+
+@router.message(Command("sub"))
+async def cmd_sub(message: types.Message):
+    """Выдать подписку: /sub @username 30 или /sub user_id 30"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = (message.text or "").split()
+    # /sub @username 30
+    if len(parts) < 3:
+        await message.answer("Использование: /sub @username 30\nили: /sub 123456789 30")
+        return
+    target_raw = parts[1].lstrip("@")
+    try:
+        days = int(parts[2])
+    except ValueError:
+        await message.answer("❌ Количество дней должно быть числом. Пример: /sub @vasya 30")
+        return
+    if days < 1 or days > 3650:
+        await message.answer("❌ Дни должны быть от 1 до 3650.")
+        return
+
+    # Ищем пользователя по username или user_id
+    target_id = None
+    target_name = target_raw
+    if target_raw.isdigit():
+        target_id = int(target_raw)
+    else:
+        # Ищем по username в БД
+        import sqlite3 as _sqlite3
+        try:
+            from database import _get_db_connection
+            with _get_db_connection() as conn:
+                row = conn.execute(
+                    "SELECT user_id, username, first_name FROM users WHERE username=? COLLATE NOCASE",
+                    (target_raw,)
+                ).fetchone()
+            if row:
+                target_id = row[0]
+                target_name = row[1] or row[2] or target_raw
+        except Exception as e:
+            logger.warning(f"[sub] Ошибка поиска: {e}")
+
+    if not target_id:
+        await message.answer(
+            f"❌ Пользователь @{target_raw} не найден в базе.\n"
+            "Пользователь должен хотя бы раз запустить бота."
+        )
+        return
+
+    until = grant_subscription(target_id, days)
+    until_str = until.strftime("%d.%m.%Y")
+    await message.answer(
+        f"✅ <b>Подписка выдана</b>\n\n"
+        f"👤 @{target_name} (ID: {target_id})\n"
+        f"📅 Действует до: <b>{until_str}</b> ({days} дн.)",
+        parse_mode="HTML"
+    )
+    logger.info(f"[sub] Админ {message.from_user.id} выдал {days} дней → {target_id}")
+
+
+@router.message(Command("trial"))
+async def cmd_trial(message: types.Message):
+    """Выдать 3-дневный пробный: /trial @username"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer("Использование: /trial @username\nили: /trial 123456789")
+        return
+    target_raw = parts[1].lstrip("@")
+
+    target_id = None
+    target_name = target_raw
+    if target_raw.isdigit():
+        target_id = int(target_raw)
+    else:
+        try:
+            from database import _get_db_connection
+            with _get_db_connection() as conn:
+                row = conn.execute(
+                    "SELECT user_id, username, first_name FROM users WHERE username=? COLLATE NOCASE",
+                    (target_raw,)
+                ).fetchone()
+            if row:
+                target_id = row[0]
+                target_name = row[1] or row[2] or target_raw
+        except Exception as e:
+            logger.warning(f"[trial] Ошибка поиска: {e}")
+
+    if not target_id:
+        await message.answer(
+            f"❌ Пользователь @{target_raw} не найден в базе.\n"
+            "Пользователь должен хотя бы раз запустить бота."
+        )
+        return
+
+    ok = grant_trial(target_id)
+    if ok:
+        await message.answer(
+            f"🎁 <b>Пробный период выдан</b>\n\n"
+            f"👤 @{target_name} (ID: {target_id})\n"
+            f"📅 3 дня полного доступа активированы.",
+            parse_mode="HTML"
+        )
+        logger.info(f"[trial] Админ {message.from_user.id} выдал trial → {target_id}")
+    else:
+        await message.answer(
+            f"⚠️ @{target_name} уже использовал пробный период.\n"
+            "Чтобы дать доступ — используй /sub @username 30"
+        )
+
+
+@router.message(Command("revoke"))
+async def cmd_revoke(message: types.Message):
+    """Отозвать подписку: /revoke @username"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer("Использование: /revoke @username")
+        return
+    target_raw = parts[1].lstrip("@")
+
+    target_id = None
+    target_name = target_raw
+    if target_raw.isdigit():
+        target_id = int(target_raw)
+    else:
+        try:
+            from database import _get_db_connection
+            with _get_db_connection() as conn:
+                row = conn.execute(
+                    "SELECT user_id, username, first_name FROM users WHERE username=? COLLATE NOCASE",
+                    (target_raw,)
+                ).fetchone()
+            if row:
+                target_id = row[0]
+                target_name = row[1] or row[2] or target_raw
+        except Exception as e:
+            logger.warning(f"[revoke] Ошибка поиска: {e}")
+
+    if not target_id:
+        await message.answer(f"❌ Пользователь @{target_raw} не найден в базе.")
+        return
+
+    revoke_subscription(target_id)
+    await message.answer(
+        f"🚫 <b>Подписка отозвана</b>\n\n"
+        f"👤 @{target_name} (ID: {target_id})",
+        parse_mode="HTML"
+    )
+    logger.info(f"[revoke] Админ {message.from_user.id} отозвал подписку у {target_id}")
+
+
+@router.message(Command("hidepred"))
+async def cmd_hidepred(message: types.Message):
+    """Скрыть прогноз из статистики (данные остаются в БД): /hidepred tennis 50"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "Использование: /hidepred &lt;sport&gt; &lt;id&gt;\n"
+            "Спорты: tennis, basketball, football, cs2, hockey\n"
+            "Пример: /hidepred tennis 50",
+            parse_mode="HTML"
+        )
+        return
+    sport = parts[1].lower()
+    valid = {"tennis", "basketball", "football", "cs2", "hockey"}
+    if sport not in valid:
+        await message.answer(f"Неверный спорт. Доступны: {', '.join(valid)}")
+        return
+    try:
+        pred_id = int(parts[2])
+    except ValueError:
+        await message.answer("ID должен быть числом.")
+        return
+
+    from database import _get_db_connection
+    with _get_db_connection() as conn:
+        cur = conn.execute(
+            f"UPDATE {sport}_predictions SET hidden=1 WHERE id=?", (pred_id,)
+        )
+        conn.commit()
+    if cur.rowcount:
+        await message.answer(f"✅ Прогноз #{pred_id} ({sport}) скрыт из статистики. Данные в БД сохранены.")
+    else:
+        await message.answer(f"❌ Прогноз #{pred_id} не найден в {sport}.")
+
+
+@router.message(Command("resetuser"))
+async def cmd_resetuser(message: types.Message):
+    """Сбросить пользователя для тестирования: /resetuser @username или /resetuser me"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer("Использование: /resetuser @username  или  /resetuser me")
+        return
+
+    target_raw = parts[1].lstrip("@")
+
+    if target_raw == "me":
+        target_id = message.from_user.id
+        target_name = message.from_user.username or str(target_id)
+    elif target_raw.isdigit():
+        target_id = int(target_raw)
+        target_name = target_raw
+    else:
+        try:
+            from database import _get_db_connection
+            with _get_db_connection() as conn:
+                row = conn.execute(
+                    "SELECT user_id, username, first_name FROM users WHERE username=? COLLATE NOCASE",
+                    (target_raw,)
+                ).fetchone()
+            if row:
+                target_id = row[0]
+                target_name = row[1] or row[2] or target_raw
+            else:
+                await message.answer(f"❌ Пользователь @{target_raw} не найден в базе.")
+                return
+        except Exception as e:
+            await message.answer(f"❌ Ошибка поиска: {e}")
+            return
+
+    reset_user_for_testing(target_id)
+    await message.answer(
+        f"🔄 <b>Пользователь сброшен</b>\n\n"
+        f"👤 @{target_name} (ID: <code>{target_id}</code>)\n\n"
+        f"✅ Лимиты обнулены\n"
+        f"✅ Подписка снята\n"
+        f"✅ Пробный период сброшен\n\n"
+        f"<i>Теперь он выглядит как новый free-пользователь.</i>",
+        parse_mode="HTML"
+    )
+    logger.info(f"[resetuser] Админ {message.from_user.id} сбросил пользователя {target_id}")
+
+
+@router.message(Command("users"))
+async def cmd_users(message: types.Message):
+    """Список последних пользователей со статусом подписки."""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    users = get_users_list(limit=25)
+    if not users:
+        await message.answer("Пользователей пока нет.")
+        return
+
+    lines = ["👥 <b>Последние пользователи</b>", "━━━━━━━━━━━━━━━━━━━━", ""]
+    for u in users:
+        name = _html_mod.escape(str(u["username"])[:20])
+        if u["has_sub"]:
+            sub_tag = f"💎 {u['days_left']}д"
+        elif u["trial_used"]:
+            sub_tag = "⬜ исп.пробный"
+        else:
+            sub_tag = "🆓 free"
+        lines.append(
+            f"{sub_tag} | <b>{name}</b> | {u['analyses_total']} ан. | {u['last_active']}"
+        )
+
+    lines += [
+        "",
+        "<i>💎 — активная подписка (дней осталось)</i>",
+        "<i>🆓 — бесплатный тариф</i>",
+        "<i>⬜ — пробный уже использован</i>",
+    ]
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("commands"))
+async def cmd_commands(message: types.Message):
+    """Список всех команд бота."""
+    is_admin = message.from_user.id in ADMIN_IDS
+
+    user_lines = [
+        "📋 <b>Команды CHIMERA AI</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "👤 <b>Общие:</b>",
+        "  /start — запустить бота / главное меню",
+        "  /commands — этот список команд",
+        "",
+        "📊 <b>Статистика и сигналы:</b>",
+        "  /signals — Сигналы дня (лучшая ставка)",
+        "  /stats — общая статистика прогнозов",
+        "  /cs2stats — статистика CS2",
+        "  /footballstats — статистика футбола",
+        "  /results — последние результаты",
+        "",
+        "⚙️ <b>Личное:</b>",
+        "  /resetmybets — сбросить свои личные ставки",
+        "  /ping — статус бота и аптайм",
+    ]
+
+    admin_lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "🔐 <b>Команды администратора:</b>",
+        "",
+        "📊 <b>Панель управления:</b>",
+        "  /admin — полная панель (статистика, ставки, ошибки)",
+        "  /ping — аптайм + статусы API + circuit breakers",
+        "",
+        "👥 <b>Управление пользователями:</b>",
+        "  /sub @username 30 — выдать подписку на N дней",
+        "  /trial @username — выдать 3-дневный пробный период",
+        "  /revoke @username — отозвать подписку",
+        "  /users — список пользователей со статусом подписки",
+        "",
+        "🤖 <b>Обучение и калибровка:</b>",
+        "  /learn_and_suggest — запустить MetaLearner вручную",
+        "",
+        "📝 <b>Формат команд управления доступом:</b>",
+        "  /sub @vasya 30  → подписка на 30 дней",
+        "  /sub 123456789 7  → по user_id на 7 дней",
+        "  /trial @vasya  → пробный 3 дня (только 1 раз)",
+        "  /revoke @vasya  → отозвать немедленно",
+    ]
+
+    lines = user_lines + (admin_lines if is_admin else [])
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("admin_bets_page_"))

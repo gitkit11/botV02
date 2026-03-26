@@ -171,13 +171,17 @@ def compute_chimera_score(
     away_xg_stats: dict = None,
     line_movement: dict = None,
     h2h_data: dict = None,
+    apply_calibration: bool = True,
 ) -> List[Dict]:
     """
     Вычисляет CHIMERA Score для каждого исхода матча.
     Возвращает список кандидатов, отсортированных по баллам (лучший первый).
+    apply_calibration=False для баскетбола/хоккея/теннис: калибровка построена
+    на футбольных данных и искажает EV других видов спорта.
     """
     candidates = []
-    cal = get_historical_calibration()  # исторический калибратор
+    # Калибратор применяем только для футбола — он обучен на football_predictions
+    cal = get_historical_calibration() if apply_calibration else {}
 
     for outcome_key, prob, odds_key, team, form, elo_fav, elo_opp, xg_stats_fav, xg_stats_opp in [
         ("П1", home_prob, "home_win", home_team, home_form, elo_home, elo_away, home_xg_stats, away_xg_stats),
@@ -188,7 +192,7 @@ def compute_chimera_score(
         if not odds or odds <= 1.20 or prob <= 0:
             continue
 
-        # Применяем исторический калибратор
+        # Применяем исторический калибратор (только для футбола)
         prob = calibrate_probability(prob, cal)
         implied = _implied_prob(odds)
 
@@ -369,11 +373,12 @@ JSON ответ:
 {{
   "best": 1,
   "confidence": 70,
-  "reason": "краткая причина выбора лучшего (1 предложение)",
+  "reason": "краткая причина выбора лучшей ставки — называй команду/игрока по имени, не пиши 'Ставка N'",
   "reasons": ["оценка кандидата 1", "оценка кандидата 2", "оценка кандидата 3"],
   "skip": []
 }}
-"reasons" — массив из {len(top)} строк, по одной оценке на каждого кандидата (1 предложение каждая)."""
+"reasons" — массив из {len(top)} строк, по одной оценке на каждого кандидата (1 предложение каждая).
+ВАЖНО: в поле "reason" называй команду/игрока по имени. Никогда не пиши "Ставка 1", "Ставка 2" и т.д."""
 
     best_c_default = top[0]
 
@@ -517,6 +522,9 @@ warning = предупреждение если есть риск (иначе п
         gpt_best_idx   = max(0, min(len(top)-1, int(_gpt_data.get("best", 1)) - 1))
         gpt_confidence = int(_gpt_data.get("confidence", 60))
         gpt_reason     = str(_gpt_data.get("reason", ""))
+        # Вычищаем "Ставка N" — GPT иногда нумерует несмотря на инструкцию
+        import re as _re
+        gpt_reason = _re.sub(r'\bСтавка\s+\d+\b\s*', '', gpt_reason, flags=_re.IGNORECASE).strip(" ,.")
         gpt_skip       = [max(0, int(i)-1) for i in _gpt_data.get("skip", [])]
         gpt_reasons    = _gpt_data.get("reasons", [])  # оценки всех кандидатов
         logger.info(f"[CHIMERA GPT] Выбор #{gpt_best_idx+1} | {gpt_confidence}%")

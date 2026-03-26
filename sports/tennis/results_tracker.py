@@ -76,12 +76,22 @@ def get_finished_tennis_matches(days_back: int = 3) -> list:
 
             actual_winner = p1 if winner == "First Player" else p2
 
+            # Определяем поверхность из данных API или по названию турнира
+            surface_raw = (m.get("event_ground") or m.get("surface") or "hard").lower()
+            if "clay" in surface_raw:
+                surface = "clay"
+            elif "grass" in surface_raw:
+                surface = "grass"
+            else:
+                surface = "hard"
+
             results.append({
-                "p1":     p1,
-                "p2":     p2,
-                "winner": actual_winner,
-                "date":   m.get("event_date", ""),
-                "score":  m.get("event_final_result", ""),
+                "p1":      p1,
+                "p2":      p2,
+                "winner":  actual_winner,
+                "date":    m.get("event_date", ""),
+                "score":   m.get("event_final_result", ""),
+                "surface": surface,
             })
 
         return results
@@ -165,6 +175,17 @@ def check_and_update_tennis_results() -> int:
                 f"[Tennis Tracker] {icon} {home} vs {away} → {winner} "
                 f"(прогноз: {recommended})"
             )
+
+            # Обновляем surface ELO
+            try:
+                from sports.tennis.rankings import update_surface_elo, detect_tour
+                surface = result.get("surface", "hard")
+                loser   = away if actual_outcome == "home_win" else home
+                tour    = "wta" if "wta" in pred.get("sport_key", "").lower() else "atp"
+                update_surface_elo(winner, loser, surface, tour)
+            except Exception as elo_err:
+                logger.warning(f"[Tennis ELO] update failed: {elo_err}")
+
         except Exception as e:
             logger.error(f"[Tennis Tracker] Ошибка update_result {home} vs {away}: {e}")
 

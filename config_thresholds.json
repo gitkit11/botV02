@@ -1,8 +1,8 @@
 {
   "FOOTBALL_CFG": {
-    "min_prob": 0.6,
+    "min_prob": 0.58,
     "min_ev": 0.25,
-    "min_odds": 1.55,
+    "min_odds": 1.5,
     "max_odds": 3.5,
     "min_form_wins": 3,
     "min_elo_gap": 50,
@@ -30,21 +30,21 @@
     "max_odds": 2.2,
     "min_elo_gap": 100,
     "min_score": 4,
-    "weight_elo": 0.31,
-    "weight_odds": 0.39,
-    "weight_home": 0.15,
+    "weight_elo": 0.27,
+    "weight_odds": 0.43,
+    "weight_home": 0.0,
     "weight_form": 0.15
   },
   "HOCKEY_CFG": {
-    "min_prob": 0.6,
-    "min_ev": 0.09,
-    "min_odds": 1.6,
+    "min_prob": 0.58,
+    "min_ev": 0.08,
+    "min_odds": 1.55,
     "max_odds": 2.4,
-    "min_elo_gap": 70,
+    "min_elo_gap": 60,
     "min_score": 3,
-    "weight_elo": 0.3,
-    "weight_odds": 0.4,
-    "weight_home": 0.15,
+    "weight_elo": 0.35,
+    "weight_odds": 0.5,
+    "weight_home": 0.0,
     "weight_form": 0.15
   },
   "TENNIS_CFG": {

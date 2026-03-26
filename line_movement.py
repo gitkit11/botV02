@@ -151,26 +151,26 @@ def get_movement_score(movement: dict, predicted_key: str) -> float:
 
 
 def format_movement_block(movement: dict) -> str:
-    """HTML-строка с движением линий для отображения в боте."""
+    """Строка с движением линий для отображения в боте (plain text / Markdown)."""
     if not movement:
         return ""
 
     labels = {"home_win": "П1", "draw": "X", "away_win": "П2"}
-    lines = ["📉 <b>Движение линий:</b>"]
+    lines = ["📉 *Движение линий:*"]
 
     for key, label in labels.items():
         m = movement.get(key)
         if not m:
             continue
         arrow = "📉" if m["dir"] == "down" else "📈"
-        lines.append(f"  {arrow} {label}: {m['open']} → {m['now']} (<code>{m['chg']:+.1f}%</code>)")
+        lines.append(f"  {arrow} {label}: {m['open']} → {m['now']} ({m['chg']:+.1f}%)")
 
     sharp = movement.get("sharp_outcome")
     if sharp:
         icon = "🔴" if movement["sharp_strength"] == "STRONG" else "🟡"
         lbl = labels.get(sharp, sharp)
         lines.append(
-            f"\n{icon} <b>Sharp money:</b> {lbl} "
+            f"\n{icon} *Sharp money:* {lbl} "
             f"({movement['sharp_pct']:+.1f}% за {movement['hours_open']}ч)"
         )
 

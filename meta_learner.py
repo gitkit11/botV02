@@ -7,25 +7,41 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_thresholds.json")
+
+
+def _load_json_cfg() -> dict:
+    with open(_JSON_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_json_cfg(data: dict) -> None:
+    """Атомарная запись: пишем во временный файл, потом rename."""
+    tmp = _JSON_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, _JSON_PATH)  # атомарная замена на всех ОС
+
+
 class MetaLearner:
     def __init__(self, db_path: str = 'chimera_predictions.db', signal_engine_path: str = 'signal_engine.py'):
         self.db_path = db_path
         self.signal_engine_path = signal_engine_path
-        self.thresholds_path = 'config_thresholds.py'
         self.current_cfgs = self._load_current_cfgs()
 
     def _load_current_cfgs(self) -> Dict:
-        """Загружает текущие пороги из config_thresholds.py."""
+        """Загружает текущие пороги из config_thresholds.json."""
         try:
-            from config_thresholds import FOOTBALL_CFG, CS2_CFG, BASKETBALL_CFG
+            data = _load_json_cfg()
             return {
-                "FOOTBALL_CFG":    dict(FOOTBALL_CFG),
-                "CS2_CFG":         dict(CS2_CFG),
-                "BASKETBALL_CFG":  dict(BASKETBALL_CFG),
+                "FOOTBALL_CFG":    dict(data.get("FOOTBALL_CFG", {})),
+                "CS2_CFG":         dict(data.get("CS2_CFG", {})),
+                "BASKETBALL_CFG":  dict(data.get("BASKETBALL_CFG", {})),
+                "HOCKEY_CFG":      dict(data.get("HOCKEY_CFG", {})),
             }
         except Exception as e:
             logger.error(f"Ошибка при загрузке CFG из config_thresholds: {e}")
-            return {"FOOTBALL_CFG": {}, "CS2_CFG": {}, "BASKETBALL_CFG": {}}
+            return {"FOOTBALL_CFG": {}, "CS2_CFG": {}, "BASKETBALL_CFG": {}, "HOCKEY_CFG": {}}
 
     def analyze_performance(self, sport: str) -> Dict:
         if not os.path.exists(self.db_path):
@@ -136,38 +152,91 @@ class MetaLearner:
         return updates
 
     def apply_updates(self, sport: str, updates: Dict):
-        """Обновляет пороги в config_thresholds.py."""
+        """Обновляет пороги в config_thresholds.json атомарно."""
         if not updates:
             return
         cfg_name = f"{sport.upper()}_CFG"
         try:
-            with open(self.thresholds_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            cfg_start = False
-            new_lines = []
-            for line in lines:
-                if cfg_name in line and '=' in line:
-                    cfg_start = True
-                if cfg_start:
-                    for key, val in updates.items():
-                        if f'"{key}"' in line:
-                            line = re.sub(
-                                r'("' + key + r'":\s*)([\d\.]+)',
-                                r'\g<1>{}'.format(val),
-                                line,
-                            )
-                            print(f"[MetaLearner] {cfg_name}['{key}'] → {val}")
-                if cfg_start and line.strip() == '}':
-                    cfg_start = False
-                new_lines.append(line)
-            with open(self.thresholds_path, 'w', encoding='utf-8') as f:
-                f.writelines(new_lines)
-            # Сбрасываем кэш импорта чтобы изменения применились сразу
+            data = _load_json_cfg()
+            if cfg_name not in data:
+                logger.warning(f"[MetaLearner] {cfg_name} не найден в JSON")
+                return
+            for key, val in updates.items():
+                old = data[cfg_name].get(key)
+                data[cfg_name][key] = val
+                logger.info(f"[MetaLearner] {cfg_name}['{key}']: {old} → {val}")
+            _save_json_cfg(data)
+            # Перезагружаем модуль чтобы изменения применились сразу
             import importlib, sys
             if 'config_thresholds' in sys.modules:
                 importlib.reload(sys.modules['config_thresholds'])
         except Exception as e:
-            logger.error(f"[MetaLearner] Ошибка при обновлении config_thresholds.py: {e}")
+            logger.error(f"[MetaLearner] Ошибка при обновлении config_thresholds.json: {e}")
+
+    def analyze_hockey_weights(self) -> Dict:
+        """
+        Анализирует какой компонент (ELO или Odds) был точнее для хоккея.
+        Возвращает рекомендованные веса для HOCKEY_CFG.
+        """
+        if not os.path.exists(self.db_path):
+            return {}
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT ensemble_home, ensemble_away, elo_home, elo_away,
+                       bookmaker_odds_home, bookmaker_odds_away,
+                       recommended_outcome, real_outcome
+                FROM hockey_predictions
+                WHERE real_outcome IS NOT NULL AND real_outcome != 'expired'
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+
+            if len(rows) < 10:
+                return {}
+
+            elo_correct = 0
+            odds_correct = 0
+            total = 0
+
+            for row in rows:
+                ens_h, ens_a, elo_h, elo_a, odds_h, odds_a, pred, real = row
+                if not real or not pred:
+                    continue
+                total += 1
+
+                if elo_h and elo_a:
+                    elo_pred = "home_win" if elo_h > elo_a else "away_win"
+                    if elo_pred == real:
+                        elo_correct += 1
+
+                if odds_h and odds_a and odds_h > 1.02 and odds_a > 1.02:
+                    odds_pred = "home_win" if (1 / odds_h) > (1 / odds_a) else "away_win"
+                    if odds_pred == real:
+                        odds_correct += 1
+
+            if total == 0:
+                return {}
+
+            elo_acc  = elo_correct  / total
+            odds_acc = odds_correct / total
+            total_acc = elo_acc + odds_acc
+
+            if total_acc > 0:
+                new_elo  = round(0.70 * elo_acc  / total_acc, 2)
+                new_odds = round(0.70 * odds_acc / total_acc, 2)
+                new_elo  = max(0.15, min(0.45, new_elo))
+                new_odds = round(0.70 - new_elo, 2)
+                logger.info(
+                    f"[Hockey Meta] ELO точность: {elo_acc*100:.1f}%, "
+                    f"Odds точность: {odds_acc*100:.1f}% | "
+                    f"Новые веса: ELO={new_elo}, Odds={new_odds}"
+                )
+                return {"weight_elo": new_elo, "weight_odds": new_odds}
+        except Exception as e:
+            logger.error(f"[Hockey Meta] Ошибка: {e}")
+        return {}
 
     def analyze_basketball_weights(self) -> Dict:
         """
@@ -241,7 +310,7 @@ class MetaLearner:
 
 if __name__ == "__main__":
     ml = MetaLearner()
-    for s in ['football', 'cs2', 'basketball']:
+    for s in ['football', 'cs2', 'basketball', 'hockey']:
         p = ml.analyze_performance(s)
         if "error" not in p:
             print(f"Анализ {s}: ROI={p.get('roi')}%, Accuracy={p.get('accuracy')}% ({p.get('total')} матчей)")

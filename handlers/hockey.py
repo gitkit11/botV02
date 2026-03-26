@@ -92,7 +92,7 @@ async def hockey_select_league(call: types.CallbackQuery):
         )
     except Exception as e:
         logger.error(f"[Хоккей] Ошибка: {e}")
-        await status.edit_text("⚠️ Не удалось загрузить матчи. Попробуй позже.", parse_mode="HTML")
+        await status.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.", parse_mode="HTML")
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("hockey_match_"))
@@ -167,9 +167,9 @@ async def hockey_analyze_match(call: types.CallbackQuery):
         total_data = analysis.get("total_analysis", {})
 
         if h_prob >= a_prob:
-            fav, fav_prob, fav_odds, fav_ev = home, h_prob, odds["home_win"], h_ev
+            fav, fav_prob, fav_odds, fav_ev = home, h_prob, odds.get("home_win", 0), h_ev
         else:
-            fav, fav_prob, fav_odds, fav_ev = away, a_prob, odds["away_win"], a_ev
+            fav, fav_prob, fav_odds, fav_ev = away, a_prob, odds.get("away_win", 0), a_ev
 
         kelly = 0.0
         if fav_odds > 1.02 and fav_ev > 0:
@@ -180,10 +180,12 @@ async def hockey_analyze_match(call: types.CallbackQuery):
             f"🏒 <b>{home} vs {away}</b>\n⏳ Запускаю AI анализ...", parse_mode="HTML"
         )
 
-        home_form = analysis.get("home_form", "")
-        away_form = analysis.get("away_form", "")
-        home_b2b  = analysis.get("home_b2b", False)
-        away_b2b  = analysis.get("away_b2b", False)
+        home_form  = analysis.get("home_form", "")
+        away_form  = analysis.get("away_form", "")
+        home_b2b   = analysis.get("home_b2b", False)
+        away_b2b   = analysis.get("away_b2b", False)
+        home_goals = analysis.get("home_goals", {})
+        away_goals = analysis.get("away_goals", {})
 
         form_block = ""
         if home_form or away_form:
@@ -193,6 +195,12 @@ async def hockey_analyze_match(call: types.CallbackQuery):
             b2b_block += f"⚠️ {home} играл вчера (усталость!)\n"
         if away_b2b:
             b2b_block += f"⚠️ {away} играл вчера (усталость!)\n"
+        goals_block = ""
+        if home_goals.get("gp", 0) >= 3 and away_goals.get("gp", 0) >= 3:
+            goals_block = (
+                f"Голы/игра: {home}={home_goals['gf']} GF/{home_goals['ga']} GA | "
+                f"{away}={away_goals['gf']} GF/{away_goals['ga']} GA\n"
+            )
         total_block = ""
         if total_data:
             total_block = (
@@ -207,20 +215,27 @@ async def hockey_analyze_match(call: types.CallbackQuery):
                 _nv_h = odds.get("no_vig_home", 0)
                 _nv_a = odds.get("no_vig_away", 0)
                 prompt = (
-                    f"Хоккей. {league_name}. Матч: {home} vs {away}. {time_label}.\n"
+                    f"Хоккей. {league_name}. {home} vs {away}. {time_label}.\n"
                     f"ELO: {home}={analysis.get('elo_home',1550)}, {away}={analysis.get('elo_away',1550)} (разрыв {_elo_gap})\n"
-                    f"Вероятности модели: {home}={round(h_prob*100)}%, {away}={round(a_prob*100)}%\n"
-                    f"No-vig: {home}={round(_nv_h*100,1)}%, {away}={round(_nv_a*100,1)}%\n"
-                    f"Коэффициенты: {home}={odds.get('home_win','?')}, {away}={odds.get('away_win','?')}\n"
-                    f"EV: {home}={round(h_ev*100,1)}%, {away}={round(a_ev*100,1)}%\n"
-                    f"{form_block}{b2b_block}{total_block}\n\n"
-                    f"Дай краткий анализ (3-4 предложения) и вердикт: кто победит и почему.\n"
+                    f"Наша модель: {home}={round(h_prob*100)}% | {away}={round(a_prob*100)}%\n"
+                    f"Букмекер no-vig: {home}={round(_nv_h*100,1)}% | {away}={round(_nv_a*100,1)}%\n"
+                    f"Кэфы: {home}={odds.get('home_win','?')} | {away}={odds.get('away_win','?')}\n"
+                    f"EV: {home}={round(h_ev*100,1)}% | {away}={round(a_ev*100,1)}%\n"
+                    f"{form_block}{b2b_block}{goals_block}{total_block}\n\n"
+                    f"Напиши аналитический summary из 2-3 предложений:\n"
+                    f"1) Главное преимущество фаворита — ELO разрыв, форма, домашний лёд, усталость B2B.\n"
+                    f"2) Что говорит расхождение нашей модели с линией букмекера — где рынок недооценил?\n"
+                    f"3) Уверенный вывод по тоталу — быстрый или позиционный хоккей?\n"
+                    f"Пиши как эксперт-беттор. Только факты и цифры, никакой воды.\n"
                     f"Формат ответа: {{'verdict': 'home_win'/'away_win', 'confidence': 0-100, 'summary': '...'}}"
                 )
                 resp = _gpt_client.chat.completions.create(
                     model="gpt-4.1-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3, max_tokens=300,
+                    messages=[
+                        {"role": "system", "content": "Ты — Химера, математический аналитик хоккея. Говоришь уверенно, кратко, с цифрами. Никогда не пишешь общих фраз — только конкретные выводы из данных."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.4, max_tokens=350,
                 )
                 text_r = resp.choices[0].message.content.strip()
                 try:
@@ -247,16 +262,22 @@ async def hockey_analyze_match(call: types.CallbackQuery):
             try:
                 import json as _json
                 prompt = (
-                    f"Hockey analysis. {league_name}. {home} vs {away}.\n"
-                    f"Model probabilities: {home}={round(h_prob*100)}%, {away}={round(a_prob*100)}%.\n"
-                    f"Odds: {home}={odds.get('home_win','?')}, {away}={odds.get('away_win','?')}.\n"
-                    f"EV: {home}={round(h_ev*100,1)}%, {away}={round(a_ev*100,1)}%.\n"
-                    f"{form_block}{b2b_block}\n"
-                    f"Brief analysis and prediction. JSON: {{'verdict': 'home_win'/'away_win', 'confidence': 0-100, 'summary': '...'}}"
+                    f"Hockey. {league_name}. {home} vs {away}.\n"
+                    f"Model: {home}={round(h_prob*100)}% | {away}={round(a_prob*100)}%\n"
+                    f"Odds: {home}={odds.get('home_win','?')} | {away}={odds.get('away_win','?')}\n"
+                    f"EV: {home}={round(h_ev*100,1)}% | {away}={round(a_ev*100,1)}%\n"
+                    f"{form_block}{b2b_block}{goals_block}"
+                    f"Write an independent 2-sentence sharp take:\n"
+                    f"1) The key factor the model might miss (fatigue, home ice advantage, recent momentum, goalie form).\n"
+                    f"2) Your confident verdict with one specific reason — no hedging.\n"
+                    f"JSON: {{'verdict': 'home_win'/'away_win', 'confidence': 0-100, 'summary': '...'}}"
                 )
                 resp = _groq_client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[
+                        {"role": "system", "content": "You are Shadow — a sharp, independent hockey analyst. You find angles others overlook. Be direct, specific, confident. No filler."},
+                        {"role": "user", "content": prompt}
+                    ],
                     temperature=0.3, max_tokens=250,
                 )
                 text_r = resp.choices[0].message.content.strip()
@@ -385,7 +406,7 @@ async def hockey_analyze_match(call: types.CallbackQuery):
 
     except Exception as e:
         logger.error(f"[Хоккей анализ] {e}", exc_info=True)
-        await call.message.edit_text("⚠️ Не удалось выполнить анализ. Попробуй позже.")
+        await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.")
 
 
 def _back_to_hockey_kb(league_key: str, idx: int) -> types.InlineKeyboardMarkup:
@@ -404,7 +425,7 @@ async def back_to_hockey_report(call: types.CallbackQuery):
     data   = call.data[len("back_to_hockey_report_"):]
     parts  = data.rsplit("_", 1)
     if len(parts) != 2:
-        await call.message.edit_text("⚠️ Не удалось восстановить анализ.")
+        await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.")
         return
     league_key, idx_str = parts
     key    = f"hockey_{league_key}_{idx_str}"
@@ -428,7 +449,7 @@ async def hockey_mkt_total(call: types.CallbackQuery):
     data   = call.data[len("hockey_mkt_total_"):]
     parts  = data.rsplit("_", 1)
     if len(parts) != 2:
-        await call.message.edit_text("⚠️ Ошибка данных.")
+        await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.")
         return
     league_key, idx_str = parts
     key    = f"hockey_{league_key}_{idx_str}"
@@ -461,7 +482,7 @@ async def hockey_mkt_puckline(call: types.CallbackQuery):
     data   = call.data[len("hockey_mkt_puckline_"):]
     parts  = data.rsplit("_", 1)
     if len(parts) != 2:
-        await call.message.edit_text("⚠️ Ошибка данных.")
+        await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.")
         return
     league_key, idx_str = parts
     key    = f"hockey_{league_key}_{idx_str}"

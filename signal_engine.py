@@ -62,7 +62,7 @@ def _strength(score: int, max_score: int, ev: float) -> str:
 
 _TIER_CFG: dict = {
     "basketball": {"fire": (0.70, 12.0), "strong": (0.63,  8.0), "normal": (0.57, 5.0)},
-    "hockey":     {"fire": (0.70, 14.0), "strong": (0.64, 10.0), "normal": (0.60, 7.0)},
+    "hockey":     {"fire": (0.67, 12.0), "strong": (0.62,  8.0), "normal": (0.58, 5.0)},
     "football":   {"fire": (0.68, 15.0), "strong": (0.62, 10.0), "normal": (0.56, 5.0)},
     "tennis":     {"fire": (0.75, 15.0), "strong": (0.67, 10.0), "normal": (0.60, 5.0)},
     "cs2":        {"fire": (0.72, 20.0), "strong": (0.65, 15.0), "normal": (0.60, 10.0)},
@@ -194,6 +194,10 @@ def check_football_signal(
         _min_prob = c["min_prob"] + (0.05 if outcome == "П2" else 0)
         _min_score = c["min_score"] + (1 if outcome == "П2" else 0)
 
+        # AI расходятся — нужно значительно больше доказательств (данные: 50% точность при DIS)
+        if ai_agrees is False:
+            _min_score += 2
+
         ev_prob = ensemble_prob if ensemble_prob is not None else prob
         ev_cal = _calibrate_prob(ev_prob)
         ev = _calc_ev(ev_cal if ev_cal > 0 else ev_prob, odds)
@@ -310,45 +314,48 @@ def check_draw_signal(
 
     ev = our_draw * draw_odds - 1.0     # EV как дробь
 
+    # Минимальные требования: наша вероятность должна быть ощутимо выше break-even
+    break_even = implied_bk
+    if our_draw < break_even + 0.03:   # нужен запас минимум 3% над break-even
+        return None
+
     checks = []
 
     # 1. Разрыв вероятностей (главный сигнал)
     if prob_diff < 0.06:
         checks.append(f"Равные команды (разрыв {round(prob_diff*100,1)}%) ✅")
         score = 3
-    elif prob_diff < 0.12:
+    elif prob_diff < 0.10:
         checks.append(f"Близкие команды (разрыв {round(prob_diff*100,1)}%) ✅")
         score = 2
     else:
-        return None  # слишком большой разрыв — не ставим на ничью
+        return None  # разрыв > 10% — ничья маловероятна
 
     # 2. Модельная вероятность ничьей
     if model_draw >= 0.25:
         checks.append(f"Модель: ничья {round(model_draw*100)}% ✅")
         score += 1
-    elif model_draw >= 0.20:
+    elif model_draw >= 0.22:
         checks.append(f"Модель: ничья {round(model_draw*100)}% ⚠️")
     else:
-        checks.append(f"Модель: ничья {round(model_draw*100)}% ❌")
-        if score < 3:
-            return None
+        # Если модель не подтверждает ничью — не рекомендуем
+        return None
 
     # 3. EV
     if ev >= 0.10:
         checks.append(f"EV +{round(ev*100,1)}% ✅")
         score += 1
-    elif ev >= 0.03:
+    elif ev >= 0.05:
         checks.append(f"EV +{round(ev*100,1)}% ⚠️")
     else:
-        checks.append(f"EV {round(ev*100,1)}% ❌")
-        return None  # без EV нет смысла
+        return None  # EV < 5% для ничьей — не стоит риска
 
-    # Тир
+    # Тир (ничья — высокорисковый исход, требует высоких порогов)
     if score >= 5 and ev >= 0.12:
         tier = "СТАВИТЬ 🔥🔥🔥"
-    elif score >= 4 and ev >= 0.06:
+    elif score >= 4 and ev >= 0.08:
         tier = "СТАВИТЬ 🔥🔥"
-    elif score >= 3 and ev >= 0.03:
+    elif score >= 4 and ev >= 0.05:
         tier = "СТАВИТЬ 🔥"
     else:
         return None
@@ -404,7 +411,8 @@ def check_cs2_signal(
     ]
 
     for outcome, prob, odds, team, form, elo_fav, elo_opp, mis_fav, mis_opp, rat_fav, rat_opp, fav_map_winrates, opp_map_winrates, p_maps, fav_key_players, opp_key_players in candidates:
-        if odds <= 1.0 or prob <= 0:
+        # CS2: без реальных букмекерских коэффициентов ROI фиктивный → не выдаём сигнал
+        if not odds or odds < 1.0:
             continue
 
         ev = _calc_ev(prob, odds)

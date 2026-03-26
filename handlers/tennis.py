@@ -65,7 +65,7 @@ async def cmd_tennis(message: types.Message):
         )
     except Exception as e:
         logger.error(f"[Теннис] cmd_tennis: {e}", exc_info=True)
-        await status.edit_text(f"🎾 <b>Теннис</b>\n\n⚠️ Ошибка: {str(e)[:120]}", parse_mode="HTML")
+        await status.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.", parse_mode="HTML")
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("tennis_tour_"))
@@ -280,7 +280,13 @@ async def tennis_analyze_match(call: types.CallbackQuery):
         tennis_kb.adjust(2)
         _tn_kb = tennis_kb.as_markup()
         report = _safe_truncate(report)
-        await call.message.edit_text(report, parse_mode="HTML", reply_markup=_tn_kb)
+        try:
+            await call.message.edit_text(report, parse_mode="HTML", reply_markup=_tn_kb)
+        except Exception as _html_err:
+            import re as _re
+            logger.warning(f"[Tennis HTML] Fallback plain text: {_html_err}")
+            plain_report = _re.sub(r'<[^>]+>', '', report)
+            await call.message.edit_text(plain_report, parse_mode=None, reply_markup=_tn_kb)
         import time as _time
         _report_cache[f"tennis_{sport_key}_{match_idx}"] = {
             "text": report, "kb": _tn_kb,
@@ -289,7 +295,7 @@ async def tennis_analyze_match(call: types.CallbackQuery):
 
     except Exception as e:
         logger.error(f"[Tennis Match] Ошибка: {e}", exc_info=True)
-        await call.message.edit_text(f"❌ Ошибка анализа тенниса: {str(e)[:150]}")
+        await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.")
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("tennis_mkt_"))
@@ -378,7 +384,7 @@ async def back_to_tennis_report(call: types.CallbackQuery):
     # sport_key may contain underscores, match_idx is always last
     parts     = call.data[len("back_to_report_tennis_"):].rsplit("_", 1)
     if len(parts) != 2:
-        await call.message.edit_text("⚠️ Не удалось восстановить отчёт. Вернитесь к матчу.")
+        await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.")
         return
     sport_key, idx_str = parts
     try:

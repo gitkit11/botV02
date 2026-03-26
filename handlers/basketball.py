@@ -77,7 +77,7 @@ async def bball_select_league(call: types.CallbackQuery):
         )
     except Exception as e:
         logger.error(f"[Баскетбол] Ошибка: {e}")
-        await status.edit_text("⚠️ Не удалось выполнить анализ. Попробуй позже.", parse_mode="HTML")
+        await status.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.", parse_mode="HTML")
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("bball_match_"))
@@ -176,6 +176,8 @@ async def bball_analyze_match(call: types.CallbackQuery):
         away_form = analysis.get("away_form", "")
         home_b2b  = analysis.get("home_b2b", False)
         away_b2b  = analysis.get("away_b2b", False)
+        home_inj  = analysis.get("home_injuries") or {}
+        away_inj  = analysis.get("away_injuries") or {}
 
         form_block = ""
         if home_form or away_form:
@@ -185,6 +187,13 @@ async def bball_analyze_match(call: types.CallbackQuery):
             b2b_block += f"⚠️ {home} играл вчера (back-to-back — усталость!)\n"
         if away_b2b:
             b2b_block += f"⚠️ {away} играл вчера (back-to-back — усталость!)\n"
+        inj_block = ""
+        if home_inj.get("injured") or home_inj.get("doubts"):
+            names = ", ".join(home_inj.get("injured", []) + home_inj.get("doubts", []))
+            inj_block += f"🤕 {home} травмы/сомн: {names}\n"
+        if away_inj.get("injured") or away_inj.get("doubts"):
+            names = ", ".join(away_inj.get("injured", []) + away_inj.get("doubts", []))
+            inj_block += f"🤕 {away} травмы/сомн: {names}\n"
 
         def _run_gpt_basketball():
             try:
@@ -192,20 +201,27 @@ async def bball_analyze_match(call: types.CallbackQuery):
                 _nv_h = odds.get("no_vig_home", 0)
                 _nv_a = odds.get("no_vig_away", 0)
                 prompt = (
-                    f"Баскетбол. {league_name}. Матч: {home} vs {away}. {time_label}.\n"
+                    f"Баскетбол. {league_name}. {home} vs {away}. {time_label}.\n"
                     f"ELO: {home}={analysis.get('elo_home',1500)}, {away}={analysis.get('elo_away',1500)} (разрыв {_elo_gap})\n"
-                    f"Вероятности модели: {home}={round(h_prob*100)}%, {away}={round(a_prob*100)}%\n"
-                    f"No-vig: {home}={round(_nv_h*100,1)}%, {away}={round(_nv_a*100,1)}%\n"
-                    f"Коэффициенты: {home}={odds.get('home_win','?')}, {away}={odds.get('away_win','?')}\n"
-                    f"EV: {home}={round(h_ev*100,1)}%, {away}={round(a_ev*100,1)}%\n"
-                    f"{form_block}{b2b_block}{spread_block}\n{total_block}\n\n"
-                    f"Дай краткий анализ (3-4 предложения) и вердикт: кто победит и почему.\n"
+                    f"Наша модель: {home}={round(h_prob*100)}% | {away}={round(a_prob*100)}%\n"
+                    f"Букмекер no-vig: {home}={round(_nv_h*100,1)}% | {away}={round(_nv_a*100,1)}%\n"
+                    f"Кэфы: {home}={odds.get('home_win','?')} | {away}={odds.get('away_win','?')}\n"
+                    f"EV: {home}={round(h_ev*100,1)}% | {away}={round(a_ev*100,1)}%\n"
+                    f"{form_block}{b2b_block}{inj_block}{spread_block}\n{total_block}\n\n"
+                    f"Напиши аналитический summary из 2-3 предложений:\n"
+                    f"1) Главное математическое преимущество фаворита — ELO разрыв, серия побед/поражений, усталость B2B, травмы.\n"
+                    f"2) Что говорит расхождение нашей модели с линией букмекера — где рынок ошибся?\n"
+                    f"3) Уверенный вывод с конкретной причиной.\n"
+                    f"Пиши как эксперт-беттор. Только факты и цифры, никакой воды.\n"
                     f"Формат ответа: {{'verdict': 'home_win'/'away_win', 'confidence': 0-100, 'summary': '...'}}"
                 )
                 resp = _gpt_client.chat.completions.create(
                     model="gpt-4.1-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3, max_tokens=300,
+                    messages=[
+                        {"role": "system", "content": "Ты — Химера, математический аналитик баскетбола. Говоришь уверенно, кратко, с цифрами. Никогда не пишешь общих фраз — только конкретные выводы из данных."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.4, max_tokens=350,
                 )
                 import json as _json
                 text_r = resp.choices[0].message.content.strip()
@@ -232,17 +248,23 @@ async def bball_analyze_match(call: types.CallbackQuery):
         def _run_llama_basketball():
             try:
                 prompt = (
-                    f"Basketball analysis. {league_name}. {home} vs {away}.\n"
-                    f"Model probabilities: {home}={round(h_prob*100)}%, {away}={round(a_prob*100)}%.\n"
-                    f"Odds: {home}={odds.get('home_win','?')}, {away}={odds.get('away_win','?')}.\n"
-                    f"EV: {home}={round(h_ev*100,1)}%, {away}={round(a_ev*100,1)}%.\n"
-                    f"{form_block}{b2b_block}\n"
-                    f"Brief analysis and prediction. JSON: {{'verdict': 'home_win'/'away_win', 'confidence': 0-100, 'summary': '...'}}"
+                    f"Basketball. {league_name}. {home} vs {away}.\n"
+                    f"Model: {home}={round(h_prob*100)}% | {away}={round(a_prob*100)}%\n"
+                    f"Odds: {home}={odds.get('home_win','?')} | {away}={odds.get('away_win','?')}\n"
+                    f"EV: {home}={round(h_ev*100,1)}% | {away}={round(a_ev*100,1)}%\n"
+                    f"{form_block}{b2b_block}{inj_block}\n"
+                    f"Write an independent 2-sentence take as a sharp bettor:\n"
+                    f"1) The key edge or risk the model might underweight (back-to-back fatigue, hot/cold streak, home court impact, injuries).\n"
+                    f"2) Your confident final call with a specific reason — not a hedge.\n"
+                    f"JSON: {{'verdict': 'home_win'/'away_win', 'confidence': 0-100, 'summary': '...'}}"
                 )
                 resp = _groq_client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3, max_tokens=250,
+                    messages=[
+                        {"role": "system", "content": "You are Shadow — a sharp, independent basketball analyst. You spot what others miss. Be direct, specific, confident. No filler."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.4, max_tokens=300,
                 )
                 import json as _json
                 text_r = resp.choices[0].message.content.strip()
@@ -358,4 +380,4 @@ async def bball_analyze_match(call: types.CallbackQuery):
 
     except Exception as e:
         logger.error(f"[Баскетбол анализ] {e}", exc_info=True)
-        await call.message.edit_text("⚠️ Не удалось выполнить анализ.")
+        await call.message.edit_text("😔 Произошёл сбой. Напиши нам в поддержку.")
