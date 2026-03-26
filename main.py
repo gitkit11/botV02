@@ -3575,6 +3575,13 @@ async def cmd_signals(message: types.Message):
                                 ap = hres.get("away_prob", 0)
                                 if not hp:
                                     continue
+                                # Пропускаем команды без реального ELO (AHL/неизвестные)
+                                if hres.get("no_elo_data"):
+                                    logger.debug(f"[CHIMERA HOCKEY] Пропуск {home} vs {away}: нет ELO данных")
+                                    continue
+                                # Пропускаем если модель говорит НЕ СТАВИТЬ
+                                if hres.get("bet_signal", "") == "НЕ СТАВИТЬ":
+                                    continue
                                 hcands = compute_chimera_score(
                                     home_team=home, away_team=away,
                                     home_prob=hp, away_prob=ap, draw_prob=0,

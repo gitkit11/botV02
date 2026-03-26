@@ -190,6 +190,12 @@ def check_football_signal(
         if odds <= 1.0 or prob <= 0:
             continue
 
+        # Если наша вероятность расходится с рынком > 18% — это ложный сигнал
+        # Данные: все крупные расхождения (>15%) кончались убытком
+        market_implied = 1.0 / odds if odds > 1.01 else 0.5
+        if prob - market_implied > 0.18:
+            continue
+
         # Гости: повышенный порог — away_win статистически реже, наша модель их переоценивает
         _min_prob = c["min_prob"] + (0.05 if outcome == "П2" else 0)
         _min_score = c["min_score"] + (1 if outcome == "П2" else 0)

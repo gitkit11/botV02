@@ -3,7 +3,7 @@
     "min_prob": 0.58,
     "min_ev": 0.25,
     "min_odds": 1.5,
-    "max_odds": 3.5,
+    "max_odds": 2.5,
     "min_form_wins": 3,
     "min_elo_gap": 50,
     "min_score": 5,

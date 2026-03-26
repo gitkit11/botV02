@@ -196,6 +196,11 @@ def compute_chimera_score(
         prob = calibrate_probability(prob, cal)
         implied = _implied_prob(odds)
 
+        # Для футбола: если наша вероятность > 18% выше рыночной — это ложный сигнал
+        # Данные: крупные расхождения с рынком (>18pp) дают ~15-20% точность (хуже случайного)
+        if apply_calibration and outcome_key in ("П1", "П2") and (prob - implied) > 0.18:
+            continue
+
         # ── 1. ELO преимущество (0 → 25 pts) ─────────────────────────────
         elo_gap = max(0, elo_fav - elo_opp) if (elo_fav > 0 and elo_opp > 0) else 0
         elo_pts = min(ELO_WEIGHT, elo_gap / 8)

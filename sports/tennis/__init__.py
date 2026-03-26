@@ -139,12 +139,14 @@ def scan_tennis_signals() -> list:
                 bm_total_over=m.get("bm_total_over", 0.0),
                 bm_total_under=m.get("bm_total_under", 0.0),
             )
-            # ML фильтр: если модель доступна и не рекомендует — пропускаем матч
             ml_bet    = probs.get("ml_bet", False)
             ml_result = probs.get("ml_result")
+
+            # ML фильтр: если ML недоступна или рекомендует — добавляем
+            # Если ML доступна но не рекомендует — снижаем chimera_score на 10 (мягкий штраф вместо блока)
             if probs.get("ml_available") and not ml_bet:
-                # ML модель говорит prob < 0.72 — недостаточно уверенности
-                continue
+                for c in candidates:
+                    c["chimera_score"] = max(0, c.get("chimera_score", 0) - 10)
 
             # Добавляем время матча, тоталы и ML данные в каждый кандидат
             for c in candidates:
