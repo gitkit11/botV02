@@ -2339,6 +2339,8 @@ async def handle_callback(call: types.CallbackQuery):
         ens_best_map = {'home': home_team, 'draw': 'Ничья', 'away': away_team}
         ens_best_label = ens_best_map.get(ens_best_key, home_team)
 
+        # Используем реальный bet_signal из football_ai_signals (не из GPT-ответа)
+        _fb_bet_signal = football_ai_signals[0]["tier"] if football_ai_signals else "НЕ СТАВИТЬ"
         prediction_data = {
             "gpt_verdict": gpt_result.get("recommended_outcome", ""),
             "llama_verdict": llama_result.get("recommended_outcome", ""),
@@ -2346,14 +2348,14 @@ async def handle_callback(call: types.CallbackQuery):
             "gpt_confidence": gpt_result.get("final_confidence_percent", 0),
             "llama_confidence": llama_result.get("final_confidence_percent", 0),
             "mixtral_confidence": (mixtral_result or {}).get("final_confidence_percent", 0),
-            "bet_signal": gpt_result.get("bet_signal", ""),
+            "bet_signal": _fb_bet_signal,
             "total_goals": llama_result.get("total_goals_prediction", ""),
             "btts": llama_result.get("both_teams_to_score_prediction", ""),
-            "odds_home": bookmaker_odds.get("home_win", 0),
-            "odds_draw": bookmaker_odds.get("draw", 0),
-            "odds_away": bookmaker_odds.get("away_win", 0),
-            "odds_over25": bookmaker_odds.get("over_2_5", 0),
-            "odds_under25": bookmaker_odds.get("under_2_5", 0),
+            "odds_home": bookmaker_odds.get("home_win") or None,
+            "odds_draw": bookmaker_odds.get("draw") or None,
+            "odds_away": bookmaker_odds.get("away_win") or None,
+            "odds_over25": bookmaker_odds.get("over_2_5") or None,
+            "odds_under25": bookmaker_odds.get("under_2_5") or None,
             # Математические модели
             "poisson_probs": poisson_probs,
             "elo_probs": elo_probs,
@@ -2878,7 +2880,7 @@ async def check_results_task(bot: Bot):
             # ── Авто-закрытие застарелых прогнозов (>7 дней без результата) ──
             try:
                 from database import expire_stale_predictions
-                _expired = expire_stale_predictions(days=4)
+                _expired = expire_stale_predictions(days=7)
                 if _expired:
                     print(f"[DB] Закрыто застарелых прогнозов: {_expired}")
             except Exception as _exp_e:

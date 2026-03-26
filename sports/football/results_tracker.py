@@ -111,7 +111,7 @@ def get_finished_football_matches(leagues: list) -> tuple:
 
     for league in leagues:
         try:
-            scores_raw = _get_scores(league, days_from=3)
+            scores_raw = _get_scores(league, days_from=7)
             for s in scores_raw:
                 if not s.get('completed'):
                     continue
